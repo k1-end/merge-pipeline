@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: merge_pipeline_test
+          MYSQL_USER: merge_pipeline
+          MYSQL_PASSWORD: merge_pipeline
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install pip --upgrade
+          pip install -r requirements/development.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (black)
+        run: black . --check
+
+      - name: Import sort check (isort)
+        run: isort . --check-only --diff
+
+      - name: Type check (mypy)
+        run: mypy .
+
+      - name: Django system checks
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_NAME: merge_pipeline_test
+          DB_USER: merge_pipeline
+          DB_PASSWORD: merge_pipeline
+        run: python manage.py check
+
+      - name: Security scan (bandit)
+        run: bandit -r apps config -q
+
+      - name: Dependency audit (pip-audit)
+        run: pip-audit
+
+      - name: Run tests
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_NAME: merge_pipeline_test
+          DB_USER: merge_pipeline
+          DB_PASSWORD: merge_pipeline
+          CREDENTIAL_ENCRYPTION_KEY: test-encryption-key
+        run: |
+          pytest --cov=apps --cov=config --cov-report=term-missing
