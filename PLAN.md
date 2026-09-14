@@ -1,6 +1,6 @@
 # Merge Pipeline — Django Project Plan
 
-A Django application to manage merge requests (MRs) from multiple GitLab instances (including local/self-hosted) and GitHub, with AI-powered code reviews, webhook + polling sync, and Django Admin configuration.
+A Django application to manage merge requests (MRs) across **many repositories**, where each repository lives on exactly **one origin host** — an on-premise GitLab instance, the official `gitlab.com`, or GitHub. The system fetches MRs via per-host adaptors (webhooks + periodic polling), reviews them with AI (multi-provider), posts/resolves review comments, and can open/close/merge MRs. All configuration is done through Django Admin, with MySQL as the datastore.
 
 ## Table of Contents
 
@@ -24,22 +24,40 @@ A Django application to manage merge requests (MRs) from multiple GitLab instanc
 
 ### Functional Requirements
 
-- Manage merge requests from multiple git platforms (GitLab with local instances, GitHub)
-- Multiple adaptors to fetch MR data periodically
-- AI reviews MRs and creates/resolves comments
-- Manage multiple projects
-- UI to configure sources and credentials
-- MySQL as data source for MR data and AI reviews
-- Close or open/merge MRs
+- **Many repositories, many hosts**: the system manages multiple repositories, each with exactly **one origin host**. A host is an on-premise (self-hosted) GitLab instance, the official `gitlab.com`, or GitHub. There is no limit on the number of hosts or repos per host.
+- Multiple adaptors exist — one per host type (GitLab, GitHub) — and each `GitSource` (host) carries its own credentials and webhook endpoint
+- Fetch MR data periodically (Celery Beat) + receive webhook events in near-real-time
+- AI reviews MRs and creates/resolves comments (multi-provider: Anthropic, OpenAI, local LLMs, agent CLIs like Codex / Claude Code / OpenCode)
+- Manage multiple repositories (one origin host each)
+- UI to configure sources (hosts), credentials, repositories, and AI providers
+- MySQL as the datastore for MR data and AI reviews
+- Close / reopen / merge MRs
+
+### Repository & Host Model (Domain Invariant)
+
+```
+GitSource (host) 1 ──── * Project (repository)
+   origin, credentials, webhook, adaptor type
+                        │
+                        └── * MergeRequest (MR/PR)
+                              └── * Review → * ReviewComment
+```
+
+- A **`GitSource` is a host**: the web base URL + credentials + adaptor type (GitLab or GitHub) + its webhook secret. E.g. `git.corp.local`, `gitlab.com`, `github.com` are each separate `GitSource` rows.
+- A **`Project` is a repository**: it belongs to exactly **one** `GitSource` (its origin). `unique_together = (source, external_id)` enforces that the same repo cannot be imported twice under two hosts.
+- Adding a repository to the system = picking its host + its namespace/name on that host; the adaptor resolves the rest (default branch, web URL, MR list).
+- No repository can exist without a host, and a repo is never "moved" between hosts — if it moves, it is created as a new Project under the new host.
 
 ### Technical Decisions (Confirmed with User)
 
 | Area | Decision |
 |------|----------|
+| Repository model | Each repository (`Project`) has **exactly one origin host** (`GitSource`) |
+| Host coverage | On-premise GitLab instances, official `gitlab.com`, and GitHub (many hosts, many repos) |
 | AI Provider | Multiple providers or agents (Claude, OpenAI, local LLMs, Codex, Claude Code, OpenCode) |
 | Scheduling | Celery Beat |
 | UI | Django Admin only |
-| GitLab Scale | Many dynamic instances |
+| GitLab Scale | Many dynamic instances (on-prem GitLab hosts, gitlab.com, GitHub) |
 | Real-time | Webhooks + polling |
 
 ---
@@ -136,14 +154,17 @@ class GitSourceCredential(models.Model):
 
 #### `apps/projects/models.py` — Project
 
+A `Project` **is a repository**. It belongs to exactly one host (`source`, its origin). `unique_together = (source, external_id)` guarantees a repo is imported at most once per host.
+
 ```python
 class Project(models.Model):
-    """A git project/repository being monitored."""
+    """A git repository being monitored. Each repo has exactly one origin host."""
     source = models.ForeignKey(GitSource, on_delete=models.CASCADE, related_name='projects')
     external_id = models.CharField(max_length=100)          # GitLab/GitHub project ID
-    name = models.CharField(max_length=255)
-    full_name = models.CharField(max_length=500)            # namespace/project
-    web_url = models.URLField()
+    name = models.CharField(max_length=255)                 # simple name, e.g. "api-gateway"
+    full_name = models.CharField(max_length=500)            # namespace/name, e.g. "platform/api-gateway"
+    web_url = models.URLField()                             # repo page on its host
+    clone_url = models.URLField(blank=True)                 # HTTP(S) clone URL (origin)
     default_branch = models.CharField(max_length=100, default='main')
     is_active = models.BooleanField(default=True)
     auto_review_enabled = models.BooleanField(default=False)
@@ -155,6 +176,12 @@ class Project(models.Model):
     class Meta:
         db_table = 'projects'
         unique_together = [['source', 'external_id']]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['clone_url'],
+                name='uniq_project_clone_url',
+            ),
+        ]
         indexes = [
             models.Index(fields=['source', 'is_active']),
             models.Index(fields=['-last_synced_at']),
@@ -934,9 +961,9 @@ class GitSourceCredentialAdmin(admin.ModelAdmin):
 
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
-    list_display = ['full_name', 'source', 'is_active', 'auto_review_enabled', 'last_synced_at', 'mr_count']
-    list_filter = ['source', 'is_active', 'auto_review_enabled']
-    search_fields = ['name', 'full_name']
+    list_display = ['full_name', 'source', 'clone_url', 'is_active', 'auto_review_enabled', 'last_synced_at', 'mr_count']
+    list_filter = ['source', 'source__source_type', 'is_active', 'auto_review_enabled']
+    search_fields = ['name', 'full_name', 'clone_url']
     readonly_fields = ['created_at', 'updated_at', 'last_synced_at']
     raw_id_fields = ['source']
 
@@ -1035,7 +1062,7 @@ class SyncLogAdmin(admin.ModelAdmin):
 | **Database** | MySQL (InnoDB) | ACID, JSON support for payloads, proven at scale |
 | **Admin UI** | Django Admin | Zero frontend maintenance, built-in auth/permissions, sufficient for ops |
 | **Cost Control** | CostTracker + budget limits | Prevents runaway spend, per-request estimation |
-| **Multi-GitLab Support** | Dynamic registry + per-source config | Scales to many instances, each with own credentials/webhook |
+| Multi-Host Support | Dynamic registry + per-host (source) config | Scales to many hosts — on-prem GitLab, gitlab.com, GitHub — each with own credentials/webhook |
 | **Sync** | Webhooks + polling (Beat 15min + 6h stale sweep) | Real-time with fallback, dedup via `external_updated_at` |
 
 ---
