@@ -44,3 +44,5 @@ celerybeat.pid
 
 # Logs
 *.log
+
+.ropeproject/
