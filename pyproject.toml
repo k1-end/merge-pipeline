@@ -36,6 +36,8 @@ convention = "google"
 "*/tests/**/*.py" = ["S"]
 "config/settings/*.py" = ["S"]
 "manage.py" = ["S"]
+"apps/**/tests.py" = ["D"]
+"apps/**/admin.py" = ["D"]
 
 [tool.black]
 line-length = 110
