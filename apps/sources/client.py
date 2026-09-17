@@ -18,11 +18,21 @@ class SourceClient:
             {"Authorization": f"Bearer {CredentialEncryption().decrypt(token_encrypted)}"}
         )
 
-    def get(self, path: str) -> requests.Response:
+    def get(self, path: str, params: dict | None = None) -> requests.Response:
         """GET a provider endpoint and normalize request failures."""
         try:
-            response = self.session.get(f"{self.base_url}/{path.lstrip('/')}", timeout=self.timeout)
+            response = self.session.get(
+                f"{self.base_url}/{path.lstrip('/')}", params=params, timeout=self.timeout
+            )
             response.raise_for_status()
             return response
         except requests.RequestException as exc:
             raise AdaptorConnectionError("Remote source connection failed") from exc
+
+    def get_json(self, path: str, params: dict | None = None) -> object:
+        """GET and decode a JSON provider response."""
+        response = self.get(path, params=params)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise AdaptorConnectionError("Remote source returned invalid JSON") from exc

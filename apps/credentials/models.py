@@ -13,7 +13,7 @@ class GitSourceCredential(TimestampedModel):
     )
     access_token_encrypted = models.BinaryField()
     app_id = models.CharField(max_length=100, blank=True)
-    private_key_encrypted = models.BinaryField(blank=True)
+    private_key_encrypted = models.BinaryField(blank=True, default=b"")
 
     class Meta:
         """Database mapping for encrypted source credentials."""

@@ -5,6 +5,13 @@ Phase 3 registers per-source webhook receivers here:
     - GitHub:  /webhooks/github/<source_id>/
 """
 
+from django.urls import path
+
+from apps.sources.views import GitHubWebhookView, GitLabWebhookView
+
 app_name = "sources"
 
-urlpatterns: list = []
+urlpatterns = [
+    path("gitlab/<int:source_id>/", GitLabWebhookView.as_view(), name="gitlab-webhook"),
+    path("github/<int:source_id>/", GitHubWebhookView.as_view(), name="github-webhook"),
+]
