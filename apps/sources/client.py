@@ -36,3 +36,14 @@ class SourceClient:
             return response.json()
         except ValueError as exc:
             raise AdaptorConnectionError("Remote source returned invalid JSON") from exc
+
+    def request_json(self, method: str, path: str, payload: dict | None = None) -> object:
+        """Send a JSON request and return its decoded response."""
+        try:
+            response = self.session.request(
+                method, f"{self.base_url}/{path.lstrip('/')}", json=payload, timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json() if response.content else {}
+        except (requests.RequestException, ValueError) as exc:
+            raise AdaptorConnectionError("Remote source request failed") from exc

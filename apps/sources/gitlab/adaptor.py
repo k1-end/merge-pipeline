@@ -89,3 +89,16 @@ class GitLabAdaptor(BaseGitAdaptor):
     def verify_webhook(self, payload: bytes, signature: str | None) -> bool:
         """Compare GitLab's token header without timing leaks."""
         return bool(signature) and hmac.compare_digest(signature or "", self.source.webhook_secret)
+
+    def create_comment(self, project: Any, mr_iid: str, file_path: str, line: int | None, content: str) -> str:
+        """Create a GitLab MR note."""
+        data = self.client.request_json("POST", f"projects/{project.external_id}/merge_requests/{mr_iid}/notes", {"body": content})
+        return str(data["id"])
+
+    def update_mr_state(self, project: Any, mr_iid: str, action: str) -> bool:
+        """Apply a supported GitLab MR state transition."""
+        state = {"close": "close", "reopen": "reopen", "merge": "merge"}.get(action)
+        if state is None:
+            return False
+        self.client.request_json("PUT", f"projects/{project.external_id}/merge_requests/{mr_iid}/{state}")
+        return True

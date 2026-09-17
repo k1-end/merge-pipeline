@@ -46,3 +46,11 @@ class BaseGitAdaptor(ABC):
     @abstractmethod
     def verify_webhook(self, payload: bytes, signature: str | None) -> bool:
         """Verify a provider webhook signature."""
+
+    @abstractmethod
+    def create_comment(self, project: Any, mr_iid: str, file_path: str, line: int | None, content: str) -> str:
+        """Create a review comment and return its external identifier."""
+
+    @abstractmethod
+    def update_mr_state(self, project: Any, mr_iid: str, action: str) -> bool:
+        """Apply close, reopen, or merge to a remote merge request."""

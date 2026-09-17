@@ -9,6 +9,7 @@ from apps.projects.models import MergeRequest, MRChange, Project
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.parsers import ReviewParseError, parse_review_response
 from apps.reviews.pipeline import BudgetExceededError, ReviewPipeline
+from apps.reviews.services import ReviewActionService
 from apps.sources.models import GitSource
 
 
@@ -57,3 +58,29 @@ def test_pipeline_enforces_budget(merge_request: MergeRequest) -> None:
     AIProvider.objects.create(name="expensive", provider_type="custom", model_name="mock", is_default=True, input_cost_per_million=1000)
     with pytest.raises(BudgetExceededError):
         ReviewPipeline(budget_limit_usd=0).run_review(merge_request)
+
+
+def test_post_comments_is_idempotent(merge_request: MergeRequest, monkeypatch: Any) -> None:
+    """Already-posted comments are not sent again."""
+    provider = AIProvider.objects.create(name="actions", provider_type="custom", model_name="mock")
+    review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED)
+    pending = ReviewComment.objects.create(review=review, file_path="app.py", line_number=2, comment_type="issue", content="Fix")
+    posted = ReviewComment.objects.create(review=review, file_path="old.py", comment_type="issue", content="Done", external_comment_id="100")
+    adaptor = Mock(create_comment=Mock(return_value="101"))
+    monkeypatch.setattr("apps.reviews.services.get_adaptor", lambda source: adaptor)
+    assert ReviewActionService.post_comments(review) == 1
+    pending.refresh_from_db()
+    posted.refresh_from_db()
+    assert pending.external_comment_id == "101"
+    assert posted.external_comment_id == "100"
+    adaptor.create_comment.assert_called_once()
+
+
+def test_update_mr_state_updates_local_record(merge_request: MergeRequest, monkeypatch: Any) -> None:
+    """Local state follows a successful provider action."""
+    adaptor = Mock(update_mr_state=Mock(return_value=True))
+    monkeypatch.setattr("apps.reviews.services.get_adaptor", lambda source: adaptor)
+    assert ReviewActionService.update_mr_state(merge_request, "merge") is True
+    merge_request.refresh_from_db()
+    assert merge_request.state == "merged"
+    adaptor.update_mr_state.assert_called_once()

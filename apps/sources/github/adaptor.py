@@ -93,3 +93,18 @@ class GitHubAdaptor(BaseGitAdaptor):
             self.source.webhook_secret.encode(), payload, hashlib.sha256
         ).hexdigest()
         return hmac.compare_digest(signature, expected)
+
+    def create_comment(self, project: Any, mr_iid: str, file_path: str, line: int | None, content: str) -> str:
+        """Create a GitHub pull request issue comment."""
+        data = self.client.request_json("POST", f"repos/{project.full_name}/issues/{mr_iid}/comments", {"body": content})
+        return str(data["id"])
+
+    def update_mr_state(self, project: Any, mr_iid: str, action: str) -> bool:
+        """Apply close or reopen to GitHub; merge uses the merge endpoint."""
+        if action == "merge":
+            self.client.request_json("PUT", f"repos/{project.full_name}/pulls/{mr_iid}/merge", {})
+        elif action in {"close", "reopen"}:
+            self.client.request_json("PATCH", f"repos/{project.full_name}/issues/{mr_iid}", {"state": "closed" if action == "close" else "open"})
+        else:
+            return False
+        return True

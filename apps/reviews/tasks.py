@@ -16,3 +16,16 @@ def run_ai_review(self: Any, mr_id: int) -> int:
         return ReviewPipeline().run_review(mr).id
     except Exception as exc:  # noqa: BLE001
         raise self.retry(exc=exc) from exc
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=60)
+def post_review_comments(self: Any, review_id: int) -> int:
+    """Publish pending comments for a completed review."""
+    from apps.reviews.models import Review
+    from apps.reviews.services import ReviewActionService
+
+    review = Review.objects.get(id=review_id)
+    try:
+        return ReviewActionService.post_comments(review)
+    except Exception as exc:  # noqa: BLE001
+        raise self.retry(exc=exc) from exc
