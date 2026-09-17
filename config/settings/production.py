@@ -17,6 +17,9 @@ if not env("SECRET_KEY", default="") or env("SECRET_KEY", default="").startswith
 
 SECRET_KEY = env("SECRET_KEY")
 
+if not env("CREDENTIAL_ENCRYPTION_KEY", default=""):
+    raise RuntimeError("CREDENTIAL_ENCRYPTION_KEY must be configured in production.")
+
 # ALLOWED_HOSTS is required in production
 ALLOWED_HOSTS = env("ALLOWED_HOSTS", default=[])
 if not ALLOWED_HOSTS:
@@ -34,6 +37,8 @@ SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
+DATA_UPLOAD_MAX_MEMORY_SIZE = env.int("DATA_UPLOAD_MAX_MEMORY_SIZE", default=2 * 1024 * 1024)
+DATA_UPLOAD_MAX_NUMBER_FIELDS = env.int("DATA_UPLOAD_MAX_NUMBER_FIELDS", default=1000)
 
 # ---------------------------------------------------------------------------
 # Static files

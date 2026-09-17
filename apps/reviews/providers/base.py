@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from django.conf import settings
+
 from apps.projects.models import MRChange
 from apps.reviews.models import AIProvider
 
@@ -48,6 +50,7 @@ class BaseAIProvider:
     def _prompt(self, request: ReviewRequest) -> str:
         """Render title, description, and diffs into a bounded prompt."""
         changes = "\n\n".join(f"FILE: {change.file_path}\n{change.diff}" for change in request.changes)
+        changes = changes[: settings.MAX_REVIEW_DIFF_BYTES]
         return request.review_prompt.format(title=request.mr_title, description=request.mr_description, changes=changes)
 
     def review(self, request: ReviewRequest) -> ReviewResponse:

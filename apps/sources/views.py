@@ -23,6 +23,8 @@ class SourceWebhookView(View):
 
     def post(self, request: HttpRequest, source_id: int) -> JsonResponse:
         """Validate the signature, persist the payload, and queue processing."""
+        if len(request.body) > 2 * 1024 * 1024:
+            return JsonResponse({"error": "Payload too large"}, status=413)
         source = get_object_or_404(GitSource, id=source_id, source_type=self.source_type, is_active=True)
         try:
             payload = json.loads(request.body)

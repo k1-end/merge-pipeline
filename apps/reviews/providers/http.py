@@ -3,6 +3,7 @@
 from time import monotonic
 
 import requests
+from django.conf import settings
 
 from apps.credentials.services import CredentialEncryption
 from apps.reviews.providers.base import BaseAIProvider, ProviderError, ReviewRequest, ReviewResponse
@@ -22,7 +23,7 @@ class OpenAICompatibleProvider(BaseAIProvider):
             response = requests.post(
                 f"{base}/chat/completions", headers=headers,
                 json={"model": self.config.model_name, "temperature": self.config.temperature, "max_tokens": self.config.max_tokens_per_request, "messages": [{"role": "system", "content": request.system_prompt}, {"role": "user", "content": self._prompt(request)}]},
-                timeout=120,
+                timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             raw = response.json()
@@ -42,7 +43,7 @@ class AnthropicProvider(BaseAIProvider):
         base = self.config.api_base_url.rstrip("/") if self.config.api_base_url else "https://api.anthropic.com/v1"
         try:
             key = CredentialEncryption().decrypt(self.config.api_key_encrypted)
-            response = requests.post(f"{base}/messages", headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}, json={"model": self.config.model_name, "max_tokens": self.config.max_tokens_per_request, "temperature": self.config.temperature, "system": request.system_prompt, "messages": [{"role": "user", "content": self._prompt(request)}]}, timeout=120)
+            response = requests.post(f"{base}/messages", headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}, json={"model": self.config.model_name, "max_tokens": self.config.max_tokens_per_request, "temperature": self.config.temperature, "system": request.system_prompt, "messages": [{"role": "user", "content": self._prompt(request)}]}, timeout=settings.AI_PROVIDER_TIMEOUT_SECONDS)
             response.raise_for_status()
             raw = response.json()
             content = "".join(part.get("text", "") for part in raw.get("content", []))

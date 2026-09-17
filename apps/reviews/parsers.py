@@ -24,5 +24,10 @@ def parse_review_response(content: str) -> tuple[str, list[dict]]:
     for finding in data.get("findings", []):
         if not isinstance(finding, dict) or not finding.get("file") or not finding.get("message"):
             continue
-        findings.append({"file_path": str(finding["file"]), "line_number": finding.get("line"), "comment_type": finding.get("type", "issue"), "severity": finding.get("severity", ""), "content": str(finding["message"])})
+        line = finding.get("line")
+        line_number = line if isinstance(line, int) and line > 0 else None
+        comment_type = finding.get("type", "issue")
+        if comment_type not in {"issue", "suggestion", "praise", "question"}:
+            comment_type = "issue"
+        findings.append({"file_path": str(finding["file"])[:1000], "line_number": line_number, "comment_type": comment_type, "severity": str(finding.get("severity", ""))[:20], "content": str(finding["message"])})
     return str(data.get("summary", "")), findings

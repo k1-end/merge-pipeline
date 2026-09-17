@@ -156,3 +156,6 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 # Credential encryption
 # ---------------------------------------------------------------------------
 CREDENTIAL_ENCRYPTION_KEY = env("CREDENTIAL_ENCRYPTION_KEY", default="")
+AI_PROVIDER_TIMEOUT_SECONDS = env.float("AI_PROVIDER_TIMEOUT_SECONDS", default=120.0)
+MAX_REVIEW_DIFF_BYTES = env.int("MAX_REVIEW_DIFF_BYTES", default=2_000_000)
+TESTING = env.bool("TESTING", default=False)
