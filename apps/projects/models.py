@@ -18,6 +18,7 @@ class Project(TimestampedModel):
     is_active = models.BooleanField(default=True)
     auto_review_enabled = models.BooleanField(default=False)
     review_on_draft = models.BooleanField(default=False)
+    ai_provider = models.ForeignKey("reviews.AIProvider", on_delete=models.SET_NULL, null=True, blank=True, related_name="projects")
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
