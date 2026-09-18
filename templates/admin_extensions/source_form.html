@@ -1,0 +1,6 @@
+{% extends "admin_extensions/base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="mb-4"><h4 class="fw-bold mb-1">{{ title }}</h4><p class="text-muted mb-0">Credentials are write-only and encrypted before storage.</p></div>
+<form method="post" novalidate>{% csrf_token %}<div class="card"><div class="card-body"><div class="row g-3">{% for field in form %}<div class="col-md-{% if field.name == 'webhook_secret' or field.name == 'access_token' or field.name == 'private_key' %}6{% else %}4{% endif %}"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}{% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</div>{% endfor %}</div>{% if form.non_field_errors %}<div class="alert alert-danger mt-3">{{ form.non_field_errors }}</div>{% endif %}</div><div class="card-footer d-flex justify-content-end gap-2"><a href="{% url 'admin_extensions:sources' %}" class="btn btn-label-secondary">Cancel</a><button type="submit" class="btn btn-primary">Save source</button></div></div></form>
+{% endblock %}

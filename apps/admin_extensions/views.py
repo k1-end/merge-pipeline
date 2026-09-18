@@ -1,9 +1,12 @@
+from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, redirect, render
 
+from apps.admin_extensions.forms import ProviderForm, SourceForm
 from apps.projects.models import MergeRequest, Project
-from apps.reviews.models import Review, ReviewComment
+from apps.reviews.models import AIProvider, Review, ReviewComment
+from apps.sources.models import GitSource
 
 
 @staff_member_required(login_url="admin:login")
@@ -45,3 +48,63 @@ def reviews(request: HttpRequest) -> HttpResponse:
     """Render recent AI reviews and their current status."""
     review_list = Review.objects.select_related("merge_request", "provider").order_by("-created_at", "-id")
     return render(request, "admin_extensions/reviews.html", {"reviews": review_list})
+
+
+@staff_member_required(login_url="admin:login")
+def sources(request: HttpRequest) -> HttpResponse:
+    """Render configured git sources."""
+    source_list = GitSource.objects.order_by("name")
+    return render(request, "admin_extensions/sources.html", {"sources": source_list})
+
+
+@staff_member_required(login_url="admin:login")
+def source_create(request: HttpRequest) -> HttpResponse:
+    """Create a git source and optional encrypted credentials."""
+    form = SourceForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Git source added successfully.")
+        return redirect("admin_extensions:sources")
+    return render(request, "admin_extensions/source_form.html", {"form": form, "title": "Add git source"})
+
+
+@staff_member_required(login_url="admin:login")
+def source_edit(request: HttpRequest, pk: int) -> HttpResponse:
+    """Update a git source and optional encrypted credentials."""
+    source = get_object_or_404(GitSource, pk=pk)
+    form = SourceForm(request.POST or None, instance=source)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Git source updated successfully.")
+        return redirect("admin_extensions:sources")
+    return render(request, "admin_extensions/source_form.html", {"form": form, "title": "Edit git source"})
+
+
+@staff_member_required(login_url="admin:login")
+def providers(request: HttpRequest) -> HttpResponse:
+    """Render configured AI providers."""
+    provider_list = AIProvider.objects.order_by("name")
+    return render(request, "admin_extensions/providers.html", {"providers": provider_list})
+
+
+@staff_member_required(login_url="admin:login")
+def provider_create(request: HttpRequest) -> HttpResponse:
+    """Create an AI provider with an optional encrypted API key."""
+    form = ProviderForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "AI provider added successfully.")
+        return redirect("admin_extensions:providers")
+    return render(request, "admin_extensions/provider_form.html", {"form": form, "title": "Add AI provider"})
+
+
+@staff_member_required(login_url="admin:login")
+def provider_edit(request: HttpRequest, pk: int) -> HttpResponse:
+    """Update an AI provider and optional encrypted API key."""
+    provider = get_object_or_404(AIProvider, pk=pk)
+    form = ProviderForm(request.POST or None, instance=provider)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "AI provider updated successfully.")
+        return redirect("admin_extensions:providers")
+    return render(request, "admin_extensions/provider_form.html", {"form": form, "title": "Edit AI provider"})
