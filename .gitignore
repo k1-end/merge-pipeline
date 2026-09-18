@@ -46,3 +46,4 @@ celerybeat.pid
 *.log
 
 .ropeproject/
+.playwright-mcp/
