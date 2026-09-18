@@ -93,10 +93,9 @@ merge_pipeline/
 │   ├── base.txt
 │   ├── development.txt
 │   └── production.txt
-├── docker/
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── docker-compose.prod.yml
+├── .docker/
+│   ├── dev/
+│   └── prod/
 ├── .env.example
 ├── pyproject.toml
 └── README.md

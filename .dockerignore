@@ -1,0 +1,14 @@
+.git
+.docker
+.env
+.env.*
+.venv
+__pycache__
+*.py[cod]
+.coverage
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.ropeproject
+staticfiles
+*.log

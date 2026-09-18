@@ -42,7 +42,7 @@ celery -A config beat -l info         # scheduler (separate terminal)
 
 ```bash
 cp .env.example .env
-docker compose -f docker/docker-compose.yml up --build
+docker compose -f .docker/dev/docker-compose.yml up --build
 ```
 
 ## Tooling
