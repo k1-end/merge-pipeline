@@ -31,11 +31,19 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
+    git \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system --gid 1001 appuser \
     && adduser --system --uid 1001 --gid 1001 appuser
 
 COPY --from=builder /install /usr/local
+
+# OpenCode is used only by the Celery worker, but the shared image keeps the
+# web and worker images reproducible until they are split operationally.
+RUN curl -fsSL https://opencode.ai/install | bash \
+    && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && rm -rf /root/.opencode
 
 COPY --chown=appuser:appuser . /app/
 

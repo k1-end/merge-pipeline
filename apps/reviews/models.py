@@ -10,10 +10,11 @@ class AIProvider(TimestampedModel):
 
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    OPENCODE = "opencode"
     OLLAMA = "ollama"
     VLLM = "vllm"
     CUSTOM = "custom"
-    PROVIDER_TYPES = ((ANTHROPIC, "Anthropic (Claude)"), (OPENAI, "OpenAI"), (OLLAMA, "Ollama (Local)"), (VLLM, "vLLM (Local)"), (CUSTOM, "Custom HTTP API"))
+    PROVIDER_TYPES = ((ANTHROPIC, "Anthropic (Claude)"), (OPENAI, "OpenAI"), (OPENCODE, "OpenCode Agent"), (OLLAMA, "Ollama (Local)"), (VLLM, "vLLM (Local)"), (CUSTOM, "Custom HTTP API"))
     name = models.CharField(max_length=100, unique=True)
     provider_type = models.CharField(max_length=20, choices=PROVIDER_TYPES)
     api_base_url = models.URLField(blank=True)

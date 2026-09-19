@@ -1,5 +1,6 @@
 """Cost-aware review orchestration."""
 
+from contextlib import nullcontext
 from time import monotonic
 
 from django.db import transaction
@@ -10,6 +11,7 @@ from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.parsers import parse_review_response
 from apps.reviews.providers import PROVIDER_MAP
 from apps.reviews.providers.base import ReviewRequest
+from apps.reviews.workspaces import ReviewWorkspace
 
 DEFAULT_SYSTEM_PROMPT = "You are a careful senior code reviewer. Return only JSON with summary and findings."
 DEFAULT_REVIEW_PROMPT = "Review this change.\nTitle: {title}\nDescription: {description}\nChanges:\n{changes}"
@@ -28,7 +30,9 @@ class ReviewPipeline:
 
     def select_provider(self, mr: MergeRequest) -> AIProvider:
         """Select the project override or active default provider."""
-        provider = mr.project.ai_provider or AIProvider.objects.filter(is_default=True, is_active=True).first()
+        provider = (
+            mr.project.ai_provider or AIProvider.objects.filter(is_default=True, is_active=True).first()
+        )
         if provider is None:
             raise ValueError("No active AI provider configured")
         return provider
@@ -38,13 +42,28 @@ class ReviewPipeline:
         """Execute and persist a complete review."""
         provider_config = self.select_provider(mr)
         provider = PROVIDER_MAP[provider_config.provider_type](provider_config)
-        request = ReviewRequest(mr.title, mr.description, list(mr.changes.all()), provider_config.system_prompt or DEFAULT_SYSTEM_PROMPT, provider_config.review_prompt_template or DEFAULT_REVIEW_PROMPT)
+        request = ReviewRequest(
+            mr.title,
+            mr.description,
+            list(mr.changes.all()),
+            provider_config.system_prompt or DEFAULT_SYSTEM_PROMPT,
+            provider_config.review_prompt_template or DEFAULT_REVIEW_PROMPT,
+            source_branch=mr.source_branch,
+            target_branch=mr.target_branch,
+        )
         if provider.estimate_cost(request) > self.budget_limit:
             raise BudgetExceededError("Review exceeds configured budget")
         review = Review.objects.create(merge_request=mr, provider=provider_config, status=Review.PROCESSING)
         started = monotonic()
         try:
-            response = provider.review(request)
+            workspace = (
+                ReviewWorkspace(mr.project, mr.source_branch)
+                if provider_config.provider_type == AIProvider.OPENCODE
+                else nullcontext(None)
+            )
+            with workspace as workspace_path:
+                request.workspace_path = workspace_path
+                response = provider.review(request)
             summary, findings = parse_review_response(response.summary)
             review.summary = summary
             review.findings = findings
@@ -56,7 +75,9 @@ class ReviewPipeline:
             review.status = Review.COMPLETED
             review.completed_at = timezone.now()
             review.save()
-            ReviewComment.objects.bulk_create([ReviewComment(review=review, **finding) for finding in findings])
+            ReviewComment.objects.bulk_create(
+                [ReviewComment(review=review, **finding) for finding in findings]
+            )
         except Exception as exc:
             review.status = Review.FAILED
             review.error_message = str(exc)

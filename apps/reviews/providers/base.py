@@ -17,6 +17,9 @@ class ReviewRequest:
     changes: list[MRChange]
     system_prompt: str
     review_prompt: str
+    workspace_path: str | None = None
+    source_branch: str = ""
+    target_branch: str = ""
 
 
 @dataclass
