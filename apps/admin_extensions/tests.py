@@ -85,6 +85,52 @@ class DashboardAccessTests(TestCase):
             response,
             reverse("admin_extensions:run_merge_request_review", args=[merge_request.pk]),
         )
+        self.assertContains(response, "View details")
+        self.assertContains(
+            response,
+            reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]),
+        )
+
+    def test_merge_request_detail_renders_request_context(self) -> None:
+        """Staff users can inspect a request without leaving the operations panel."""
+        user = get_user_model().objects.create_user(username="operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="detail-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="3",
+            name="web",
+            full_name="org/web",
+            web_url="https://github.com/org/web",
+        )
+        merge_request = MergeRequest.objects.create(
+            project=project,
+            external_id="12",
+            external_iid="12",
+            title="Improve dashboard",
+            description="A useful description.",
+            state=MergeRequest.OPENED,
+            author_username="maintainer",
+            source_branch="feature/dashboard",
+            target_branch="main",
+            web_url="https://github.com/org/web/pull/12",
+            opened_at=timezone.now(),
+            external_updated_at=timezone.now(),
+        )
+
+        response = self.client.get(
+            reverse("admin_extensions:merge_request_detail", args=[merge_request.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Improve dashboard")
+        self.assertContains(response, "feature/dashboard")
+        self.assertContains(response, "No AI review yet")
+        self.assertContains(response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]))
 
     def test_source_management_stays_inside_panel_and_encrypts_token(self) -> None:
         user = get_user_model().objects.create_user(username="operator", password="test-password")

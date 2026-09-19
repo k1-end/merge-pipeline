@@ -1,0 +1,76 @@
+{% extends "admin_extensions/base.html" %}
+{% block title %}!{{ merge_request.external_iid }} {{ merge_request.title|truncatechars:45 }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+  <div>
+    <a class="small text-muted text-decoration-none" href="{% url 'admin_extensions:merge_requests' %}"><i class="bx bx-arrow-back me-1"></i>All merge requests</a>
+    <div class="d-flex align-items-center gap-2 mt-3 mb-2">
+      <span class="mr-number">!{{ merge_request.external_iid }}</span>
+      <span class="badge {% if merge_request.state == 'opened' %}bg-label-success{% elif merge_request.state == 'draft' %}bg-label-warning{% elif merge_request.state == 'merged' %}bg-label-primary{% else %}bg-label-secondary{% endif %}">{{ merge_request.get_state_display }}</span>
+    </div>
+    <h4 class="fw-bold mb-2 detail-title">{{ merge_request.title }}</h4>
+    <div class="small text-muted"><i class="bx bx-git-repo-forked me-1"></i>{{ merge_request.project.full_name }} <span class="mx-2">·</span> opened by <strong>{{ merge_request.author_username }}</strong></div>
+  </div>
+  <div class="d-flex gap-2">
+    <form method="post" action="{% url 'admin_extensions:run_merge_request_review' merge_request.pk %}">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-primary" {% if merge_request.latest_review.status == 'pending' or merge_request.latest_review.status == 'processing' %}disabled{% endif %}><i class="bx bx-bot me-1"></i>Run AI review</button>
+    </form>
+    <a href="{{ merge_request.web_url }}" target="_blank" rel="noreferrer" class="btn btn-label-secondary"><i class="bx bx-link-external me-1"></i>Open source</a>
+  </div>
+</div>
+
+<div class="branch-strip mb-4">
+  <span class="branch-pill"><i class="bx bx-git-branch me-1"></i>{{ merge_request.source_branch }}</span>
+  <i class="bx bx-right-arrow-alt branch-arrow"></i>
+  <span class="branch-pill branch-target"><i class="bx bx-git-branch me-1"></i>{{ merge_request.target_branch }}</span>
+  <span class="small text-muted ms-auto">Updated {{ merge_request.external_updated_at|date:"M j, Y H:i" }}</span>
+</div>
+
+<div class="row g-4">
+  <div class="col-xl-8">
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Description</h5><span class="small text-muted">{{ merge_request.project.source.name }}</span></div>
+      <div class="card-body detail-description">{% if merge_request.description %}{{ merge_request.description|linebreaksbr }}{% else %}<span class="text-muted">No description was provided.</span>{% endif %}</div>
+    </div>
+
+    {% if merge_request.latest_review %}
+    <div class="card mb-4 review-summary review-{{ merge_request.latest_review.status }}">
+      <div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0"><i class="bx bx-bot me-2 text-primary"></i>Latest AI review</h5><span class="badge {% if merge_request.latest_review.status == 'completed' %}bg-label-success{% elif merge_request.latest_review.status == 'failed' %}bg-label-danger{% elif merge_request.latest_review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ merge_request.latest_review.get_status_display }}</span></div>
+      <div class="card-body">
+        {% if merge_request.latest_review.summary %}<p class="mb-3 review-summary-copy">{{ merge_request.latest_review.summary }}</p>{% else %}<p class="text-muted mb-3">This review has not produced a summary yet.</p>{% endif %}
+        <div class="review-metrics"><span><strong>{{ merge_request.latest_review.provider.name }}</strong><small>Provider</small></span><span><strong>{{ merge_request.latest_review.duration_ms|default:0 }}ms</strong><small>Duration</small></span><span><strong>{{ merge_request.latest_review.input_tokens|add:merge_request.latest_review.output_tokens }}</strong><small>Tokens</small></span><span><strong>${{ merge_request.latest_review.cost_usd|floatformat:4 }}</strong><small>Cost</small></span></div>
+        {% if merge_request.latest_review.error_message %}<div class="alert alert-danger mt-3 mb-0">{{ merge_request.latest_review.error_message }}</div>{% endif %}
+      </div>
+    </div>
+    {% else %}
+    <div class="card mb-4 empty-panel"><div class="card-body text-center py-5"><i class="bx bx-bot empty-icon"></i><h5 class="mt-3">No AI review yet</h5><p class="text-muted mb-0">Run a review when this request is ready for automated analysis.</p></div></div>
+    {% endif %}
+
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Findings</h5><span class="badge bg-label-danger">{{ unresolved_comments|length }} unresolved</span></div>
+      <div class="card-body p-0">
+        {% for comment in unresolved_comments %}<div class="finding-row finding-{{ comment.severity|default:'info' }}"><div class="finding-marker"></div><div class="flex-grow-1"><div class="d-flex flex-wrap justify-content-between gap-2"><strong>{{ comment.file_path }}</strong>{% if comment.line_number %}<code>line {{ comment.line_number }}</code>{% endif %}</div><div class="small text-muted text-uppercase mt-1">{{ comment.get_comment_type_display }}{% if comment.severity %} · {{ comment.severity }}{% endif %}</div><p class="mb-0 mt-2">{{ comment.content }}</p></div></div>{% empty %}<div class="text-center text-muted py-5"><i class="bx bx-check-circle empty-icon text-success"></i><p class="mb-0 mt-2">No unresolved findings.</p></div>{% endfor %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Changed files</h5><span class="badge bg-label-secondary">{{ change_count }} files</span></div>
+      <div class="card-body p-0">
+        {% for change in merge_request.changes.all %}<details class="change-file"><summary><span class="change-type change-{{ change.change_type }}">{{ change.change_type|slice:':1'|upper }}</span><span class="file-path">{{ change.file_path }}</span><span class="small text-muted ms-auto">{{ change.get_change_type_display }}</span><i class="bx bx-chevron-down ms-2"></i></summary>{% if change.diff %}<pre class="diff-block">{{ change.diff }}</pre>{% else %}<p class="text-muted small px-4 pb-3 mb-0">No diff content was stored.</p>{% endif %}</details>{% empty %}<div class="text-center text-muted py-5">No changed files have been synced.</div>{% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-xl-4">
+    <div class="card mb-4">
+      <div class="card-header"><h5 class="mb-0">Request details</h5></div>
+      <div class="card-body detail-list"><div><span>Project</span><strong>{{ merge_request.project.name }}</strong></div><div><span>Author</span><strong>{{ merge_request.author_username }}</strong></div><div><span>Opened</span><strong>{{ merge_request.opened_at|date:"M j, Y" }}</strong></div><div><span>Last synced</span><strong>{{ merge_request.last_synced_at|date:"M j, H:i" }}</strong></div>{% if merge_request.merged_at %}<div><span>Merged</span><strong>{{ merge_request.merged_at|date:"M j, Y" }}</strong></div>{% endif %}</div>
+    </div>
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Review history</h5><span class="badge bg-label-primary">{{ review_count }}</span></div>
+      <div class="card-body">{% for review in review_history %}<div class="review-history-row"><span class="activity-dot activity-{{ review.status }}"></span><div class="flex-grow-1"><div class="d-flex justify-content-between gap-2"><strong>{{ review.get_status_display }}</strong><small class="text-muted">{{ review.created_at|date:"M j, H:i" }}</small></div><div class="small text-muted">{{ review.provider.name }}{% if review.summary %} · {{ review.summary|truncatechars:70 }}{% endif %}</div></div></div>{% empty %}<p class="text-muted mb-0">No reviews have run yet.</p>{% endfor %}</div>
+    </div>
+  </div>
+</div>
+{% endblock %}

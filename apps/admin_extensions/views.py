@@ -62,6 +62,35 @@ def run_merge_request_review(request: HttpRequest, pk: int) -> HttpResponse:
 
 
 @staff_member_required(login_url="admin:login")
+def merge_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
+    """Render the operational detail view for one merge request."""
+    merge_request = get_object_or_404(
+        MergeRequest.objects.select_related("project", "project__source", "project__ai_provider")
+        .prefetch_related(
+            "changes",
+            Prefetch(
+                "reviews",
+                queryset=Review.objects.select_related("provider")
+                .prefetch_related("comments")
+                .order_by("-created_at", "-id"),
+                to_attr="review_history",
+            ),
+        ),
+        pk=pk,
+    )
+    merge_request.latest_review = merge_request.review_history[0] if merge_request.review_history else None
+    all_comments = [comment for review in merge_request.review_history for comment in review.comments.all()]
+    context = {
+        "merge_request": merge_request,
+        "review_history": merge_request.review_history,
+        "unresolved_comments": [comment for comment in all_comments if not comment.is_resolved],
+        "review_count": len(merge_request.review_history),
+        "change_count": len(merge_request.changes.all()),
+    }
+    return render(request, "admin_extensions/merge_request_detail.html", context)
+
+
+@staff_member_required(login_url="admin:login")
 def projects(request: HttpRequest) -> HttpResponse:
     """Render monitored repositories in the panel."""
     project_list = Project.objects.select_related("source", "ai_provider").order_by("full_name")
