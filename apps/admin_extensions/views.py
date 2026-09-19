@@ -138,13 +138,21 @@ def merge_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
         pk=pk,
     )
     merge_request.latest_review = merge_request.review_history[0] if merge_request.review_history else None
+    changes = list(merge_request.changes.all())
+    for change in changes:
+        diff_lines = (change.diff or "").splitlines()
+        change.additions = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
+        change.deletions = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
     all_comments = [comment for review in merge_request.review_history for comment in review.comments.all()]
     context = {
         "merge_request": merge_request,
         "review_history": merge_request.review_history,
         "unresolved_comments": [comment for comment in all_comments if not comment.is_resolved],
         "review_count": len(merge_request.review_history),
-        "change_count": len(merge_request.changes.all()),
+        "changes": changes,
+        "change_count": len(changes),
+        "addition_count": sum(change.additions for change in changes),
+        "deletion_count": sum(change.deletions for change in changes),
     }
     return render(request, "admin_extensions/merge_request_detail.html", context)
 

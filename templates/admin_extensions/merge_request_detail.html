@@ -1,4 +1,5 @@
 {% extends "admin_extensions/base.html" %}
+{% load static %}
 {% block title %}!{{ merge_request.external_iid }} {{ merge_request.title|truncatechars:45 }}{% endblock %}
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
@@ -54,10 +55,32 @@
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Changed files</h5><span class="badge bg-label-secondary">{{ change_count }} files</span></div>
-      <div class="card-body p-0">
-        {% for change in merge_request.changes.all %}<details class="change-file"><summary><span class="change-type change-{{ change.change_type }}">{{ change.change_type|slice:':1'|upper }}</span><span class="file-path">{{ change.file_path }}</span><span class="small text-muted ms-auto">{{ change.get_change_type_display }}</span><i class="bx bx-chevron-down ms-2"></i></summary>{% if change.diff %}<pre class="diff-block">{{ change.diff }}</pre>{% else %}<p class="text-muted small px-4 pb-3 mb-0">No diff content was stored.</p>{% endif %}</details>{% empty %}<div class="text-center text-muted py-5">No changed files have been synced.</div>{% endfor %}
+    <div class="card diff-card">
+      <div class="card-header diff-header">
+        <div>
+          <div class="d-flex align-items-center gap-2"><h5 class="mb-0">Changed files</h5><span class="diff-count">{{ change_count }}</span></div>
+          <p class="small text-muted mb-0 mt-1">Review the patch one file at a time</p>
+        </div>
+        <div class="diff-toolbar">
+          <span class="diff-stat diff-stat-added"><i class="bx bx-plus"></i>{{ addition_count }}</span>
+          <span class="diff-stat diff-stat-removed"><i class="bx bx-minus"></i>{{ deletion_count }}</span>
+          {% if change_count %}<button type="button" class="btn btn-sm btn-label-secondary" data-diff-action="expand"><i class="bx bx-expand-alt me-1"></i>Expand all</button>{% endif %}
+        </div>
+      </div>
+      <div class="diff-file-list">
+        {% for change in changes %}
+        <details class="change-file" {% if forloop.first %}open{% endif %}>
+          <summary>
+            <span class="change-type change-{{ change.change_type }}">{{ change.change_type|slice:':1'|upper }}</span>
+            <span class="file-info"><span class="file-path">{{ change.file_path }}</span>{% if change.old_path %}<span class="old-file-path">from {{ change.old_path }}</span>{% endif %}</span>
+            <span class="file-stats"><span class="diff-stat-added">+{{ change.additions }}</span><span class="diff-stat-removed">-{{ change.deletions }}</span></span>
+            <span class="small text-muted file-change-label">{{ change.get_change_type_display }}</span><i class="bx bx-chevron-down diff-chevron"></i>
+          </summary>
+          <div class="diff-content">
+            {% if change.diff %}<pre class="diff-block" data-diff>{{ change.diff }}</pre>{% else %}<p class="text-muted small diff-empty"><i class="bx bx-file-blank me-1"></i>No diff content was stored.</p>{% endif %}
+          </div>
+        </details>
+        {% empty %}<div class="text-center text-muted py-5">No changed files have been synced.</div>{% endfor %}
       </div>
     </div>
   </div>
@@ -74,3 +97,4 @@
   </div>
 </div>
 {% endblock %}
+{% block extra_js %}<script src="{% static 'admin_extensions/js/diff-viewer.js' %}"></script>{% endblock %}
