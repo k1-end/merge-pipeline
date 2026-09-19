@@ -11,6 +11,7 @@ urlpatterns = [
     path("projects/", views.projects, name="projects"),
     path("merge-requests/", views.merge_requests, name="merge_requests"),
     path("reviews/", views.reviews, name="reviews"),
+    path("reviews/<int:pk>/", views.review_detail, name="review_detail"),
     path("sources/", views.sources, name="sources"),
     path("sources/add/", views.source_create, name="source_create"),
     path("sources/<int:pk>/edit/", views.source_edit, name="source_edit"),

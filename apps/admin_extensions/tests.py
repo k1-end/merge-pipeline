@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from apps.credentials.models import GitSourceCredential
 from apps.projects.models import MergeRequest, Project
-from apps.reviews.models import AIProvider
+from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.sources.models import GitSource
 
 
@@ -49,6 +49,109 @@ class DashboardAccessTests(TestCase):
                 response = self.client.get(reverse(f"admin_extensions:{page_name}"))
                 self.assertEqual(response.status_code, 200)
                 self.assertContains(response, heading)
+
+    def test_review_detail_renders_execution_context_and_findings(self) -> None:
+        """A staff user can inspect one review and its persisted comments."""
+        user = get_user_model().objects.create_user(username="operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="review-detail-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="review-detail-project",
+            name="web",
+            full_name="org/web",
+            web_url="https://github.com/org/web",
+        )
+        merge_request = MergeRequest.objects.create(
+            project=project,
+            external_id="21",
+            external_iid="21",
+            title="Improve review display",
+            state=MergeRequest.OPENED,
+            author_username="maintainer",
+            source_branch="feature/reviews",
+            target_branch="main",
+            web_url="https://github.com/org/web/pull/21",
+            opened_at=timezone.now(),
+            external_updated_at=timezone.now(),
+        )
+        provider = AIProvider.objects.create(
+            name="Review detail model",
+            provider_type=AIProvider.OPENAI,
+            model_name="gpt-4o-mini",
+        )
+        review = Review.objects.create(
+            merge_request=merge_request,
+            provider=provider,
+            status=Review.COMPLETED,
+            summary="The change is focused and ready for review.",
+            findings=[{"severity": "low", "message": "Consider adding a regression test."}],
+            input_tokens=120,
+            output_tokens=80,
+            cost_usd="0.004200",
+            duration_ms=842,
+        )
+        ReviewComment.objects.create(
+            review=review,
+            file_path="templates/reviews.html",
+            line_number=18,
+            comment_type="suggestion",
+            severity="low",
+            content="Consider adding a regression test.",
+        )
+
+        response = self.client.get(reverse("admin_extensions:review_detail", args=[review.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Review summary")
+        self.assertContains(response, "The change is focused and ready for review.")
+        self.assertContains(response, "templates/reviews.html")
+        self.assertContains(response, "Review detail model")
+        self.assertContains(response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]))
+
+    def test_reviews_index_links_to_review_detail(self) -> None:
+        """Each review row exposes its dedicated show page."""
+        user = get_user_model().objects.create_user(username="operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="review-index-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="review-index-project",
+            name="api",
+            full_name="org/api",
+            web_url="https://github.com/org/api",
+        )
+        merge_request = MergeRequest.objects.create(
+            project=project,
+            external_id="22",
+            external_iid="22",
+            title="Fix API response",
+            state=MergeRequest.OPENED,
+            author_username="dev",
+            source_branch="fix/api",
+            target_branch="main",
+            web_url="https://github.com/org/api/pull/22",
+            opened_at=timezone.now(),
+            external_updated_at=timezone.now(),
+        )
+        provider = AIProvider.objects.create(
+            name="Index model",
+            provider_type=AIProvider.OPENCODE,
+            model_name="reviewer",
+        )
+        review = Review.objects.create(merge_request=merge_request, provider=provider)
+
+        response = self.client.get(reverse("admin_extensions:reviews"))
+
+        self.assertContains(response, reverse("admin_extensions:review_detail", args=[review.pk]))
 
     def test_merge_request_index_shows_manual_review_action(self) -> None:
         """The full merge-request index exposes the manual review action."""

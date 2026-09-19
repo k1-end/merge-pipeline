@@ -126,6 +126,28 @@ def reviews(request: HttpRequest) -> HttpResponse:
 
 
 @staff_member_required(login_url="admin:login")
+def review_detail(request: HttpRequest, pk: int) -> HttpResponse:
+    """Render the execution details and findings for one AI review."""
+    review = get_object_or_404(
+        Review.objects.select_related(
+            "provider",
+            "merge_request",
+            "merge_request__project",
+            "merge_request__project__source",
+        ).prefetch_related("comments"),
+        pk=pk,
+    )
+    comments = list(review.comments.all())
+    context = {
+        "review": review,
+        "comments": comments,
+        "unresolved_comments": [comment for comment in comments if not comment.is_resolved],
+        "finding_count": len(review.findings or []),
+    }
+    return render(request, "admin_extensions/review_detail.html", context)
+
+
+@staff_member_required(login_url="admin:login")
 def sources(request: HttpRequest) -> HttpResponse:
     """Render configured git sources."""
     source_list = GitSource.objects.order_by("name")

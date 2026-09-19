@@ -1,0 +1,36 @@
+{% extends "admin_extensions/base.html" %}
+{% block title %}Review #{{ review.pk }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4 review-hero">
+  <div>
+    <a class="small text-muted text-decoration-none" href="{% url 'admin_extensions:reviews' %}"><i class="bx bx-arrow-back me-1"></i>All AI reviews</a>
+    <div class="d-flex align-items-center gap-2 mt-3 mb-2"><span class="review-eyebrow">REVIEW #{{ review.pk }}</span><span class="badge {% if review.status == 'completed' %}bg-label-success{% elif review.status == 'failed' %}bg-label-danger{% elif review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ review.get_status_display }}</span></div>
+    <h4 class="fw-bold mb-2 detail-title">{{ review.merge_request.title }}</h4>
+    <div class="small text-muted"><i class="bx bx-git-repo-forked me-1"></i>{{ review.merge_request.project.full_name }} <span class="mx-2">·</span> !{{ review.merge_request.external_iid }} <span class="mx-2">·</span> {{ review.created_at|date:"M j, Y H:i" }}</div>
+  </div>
+  <a href="{% url 'admin_extensions:merge_request_detail' review.merge_request.pk %}" class="btn btn-label-primary"><i class="bx bx-git-pull-request me-1"></i>View merge request</a>
+</div>
+
+<div class="review-signal-bar mb-4"><div class="review-signal-icon"><i class="bx bx-bot"></i></div><div><strong>{{ review.provider.name }}</strong><span>{{ review.provider.model_name }} · {{ review.provider.get_provider_type_display }}</span></div><div class="review-signal-status ms-auto"><span class="activity-dot activity-{{ review.status }}"></span>{{ review.get_status_display }}</div></div>
+
+<div class="row g-4 mb-4">
+  <div class="col-sm-6 col-xl-3"><div class="card review-metric-card"><div class="card-body"><span class="review-metric-icon review-metric-purple"><i class="bx bx-time-five"></i></span><div><strong>{{ review.duration_ms|default:0 }}<small>ms</small></strong><span>Duration</span></div></div></div></div>
+  <div class="col-sm-6 col-xl-3"><div class="card review-metric-card"><div class="card-body"><span class="review-metric-icon review-metric-blue"><i class="bx bx-transfer-alt"></i></span><div><strong>{{ review.input_tokens|add:review.output_tokens }}</strong><span>Total tokens</span></div></div></div></div>
+  <div class="col-sm-6 col-xl-3"><div class="card review-metric-card"><div class="card-body"><span class="review-metric-icon review-metric-green"><i class="bx bx-dollar-circle"></i></span><div><strong>${{ review.cost_usd|floatformat:4 }}</strong><span>Estimated cost</span></div></div></div></div>
+  <div class="col-sm-6 col-xl-3"><div class="card review-metric-card"><div class="card-body"><span class="review-metric-icon review-metric-orange"><i class="bx bx-message-square-error"></i></span><div><strong>{{ finding_count }}</strong><span>AI findings</span></div></div></div></div>
+</div>
+
+<div class="row g-4">
+  <div class="col-xl-8">
+    <div class="card mb-4 review-summary review-{{ review.status }}"><div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0"><i class="bx bx-sparkles me-2 text-primary"></i>Review summary</h5><span class="small text-muted">{{ review.completed_at|date:"M j, Y H:i"|default:"Awaiting completion" }}</span></div><div class="card-body">{% if review.summary %}<p class="review-summary-copy mb-0">{{ review.summary|linebreaksbr }}</p>{% else %}<p class="text-muted mb-0">This review has not produced a summary yet.</p>{% endif %}{% if review.error_message %}<div class="alert alert-danger mt-3 mb-0"><strong>Execution error</strong><br>{{ review.error_message }}</div>{% endif %}</div></div>
+
+    <div class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Findings</h5><span class="badge {% if unresolved_comments %}bg-label-danger{% else %}bg-label-success{% endif %}">{{ unresolved_comments|length }} unresolved</span></div><div class="card-body p-0">{% for comment in comments %}<div class="finding-row finding-{{ comment.severity|default:'info' }} {% if comment.is_resolved %}finding-resolved{% endif %}"><div class="finding-marker"></div><div class="flex-grow-1"><div class="d-flex flex-wrap justify-content-between gap-2"><strong>{{ comment.file_path }}</strong>{% if comment.line_number %}<code>line {{ comment.line_number }}</code>{% endif %}</div><div class="small text-muted text-uppercase mt-1">{{ comment.get_comment_type_display }}{% if comment.severity %} · {{ comment.severity }}{% endif %}{% if comment.is_resolved %} · Resolved{% endif %}</div><p class="mb-0 mt-2">{{ comment.content }}</p></div></div>{% empty %}<div class="text-center text-muted py-5"><i class="bx bx-check-circle empty-icon text-success"></i><p class="mb-0 mt-2">No comments were generated for this review.</p></div>{% endfor %}</div></div>
+
+    {% if review.findings %}<div class="card"><div class="card-header"><h5 class="mb-0">Structured output</h5></div><div class="card-body"><pre class="structured-output">{{ review.findings|pprint }}</pre></div></div>{% endif %}
+  </div>
+  <div class="col-xl-4">
+    <div class="card mb-4"><div class="card-header"><h5 class="mb-0">Execution details</h5></div><div class="card-body detail-list"><div><span>Provider</span><strong>{{ review.provider.name }}</strong></div><div><span>Model</span><strong>{{ review.provider.model_name }}</strong></div><div><span>Input tokens</span><strong>{{ review.input_tokens }}</strong></div><div><span>Output tokens</span><strong>{{ review.output_tokens }}</strong></div><div><span>Started</span><strong>{{ review.created_at|date:"M j, Y H:i" }}</strong></div><div><span>Completed</span><strong>{{ review.completed_at|date:"M j, Y H:i"|default:"-" }}</strong></div></div></div>
+    <div class="card"><div class="card-header"><h5 class="mb-0">Merge request</h5></div><div class="card-body"><a class="review-context-link" href="{% url 'admin_extensions:merge_request_detail' review.merge_request.pk %}"><span class="mr-number">!{{ review.merge_request.external_iid }}</span><strong>{{ review.merge_request.title }}</strong><i class="bx bx-right-arrow-alt"></i></a><div class="small text-muted mt-3"><i class="bx bx-user me-1"></i>{{ review.merge_request.author_username }}<span class="mx-2">·</span>{{ review.merge_request.project.source.name }}</div><div class="branch-strip mt-3"><span class="branch-pill">{{ review.merge_request.source_branch }}</span><i class="bx bx-right-arrow-alt branch-arrow"></i><span class="branch-pill branch-target">{{ review.merge_request.target_branch }}</span></div></div></div>
+  </div>
+</div>
+{% endblock %}
