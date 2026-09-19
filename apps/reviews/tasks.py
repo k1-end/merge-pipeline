@@ -19,6 +19,19 @@ def run_ai_review(self: Any, mr_id: int) -> int:
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=60)
+def run_manual_ai_review(self: Any, mr_id: int) -> int:
+    """Run a manually requested review without automatic-review eligibility gates."""
+    from apps.projects.models import MergeRequest
+    from apps.reviews.pipeline import ReviewPipeline
+
+    mr = MergeRequest.objects.select_related("project", "project__ai_provider").get(id=mr_id)
+    try:
+        return ReviewPipeline().run_review(mr).id
+    except Exception as exc:  # noqa: BLE001 - Celery owns retry policy
+        raise self.retry(exc=exc) from exc
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=60)
 def post_review_comments(self: Any, review_id: int) -> int:
     """Publish pending comments for a completed review."""
     from apps.reviews.models import Review

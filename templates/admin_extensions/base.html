@@ -90,6 +90,14 @@
           </nav>
           <div class="content-wrapper">
             <div class="container-xxl flex-grow-1 container-p-y">
+              {% if messages %}
+                {% for message in messages %}
+                  <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags|default:'info' }}{% endif %} alert-dismissible" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                  </div>
+                {% endfor %}
+              {% endif %}
               {% block content %}{% endblock %}
             </div>
             <footer class="content-footer footer bg-footer-theme"><div class="container-xxl d-flex flex-wrap justify-content-between py-2 flex-md-row flex-column"><div class="mb-2 mb-md-0">Merge Pipeline operations panel</div><div>Built with <a href="https://themeselection.com/" target="_blank" rel="noreferrer">Sneat by ThemeSelection</a></div></div></footer>

@@ -6,6 +6,7 @@ app_name = "admin_extensions"
 
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
+    path("merge-requests/<int:pk>/review/", views.run_merge_request_review, name="run_merge_request_review"),
     path("projects/", views.projects, name="projects"),
     path("merge-requests/", views.merge_requests, name="merge_requests"),
     path("reviews/", views.reviews, name="reviews"),

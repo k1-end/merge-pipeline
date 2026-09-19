@@ -5,8 +5,40 @@ from typing import Any
 from django.db import transaction
 from django.utils import timezone
 
-from apps.reviews.models import Review
+from apps.reviews.models import AIProvider, Review
 from apps.sources.factory import get_adaptor
+
+
+class ReviewAlreadyRunningError(RuntimeError):
+    """Raised when a merge request already has an active review."""
+
+
+class ReviewConfigurationError(ValueError):
+    """Raised when a merge request cannot be reviewed with current settings."""
+
+
+class ReviewQueueService:
+    """Queue manually requested reviews from the operations dashboard."""
+
+    @staticmethod
+    def queue_manual_review(merge_request: Any) -> str:
+        """Queue one review unless the merge request already has an active one."""
+        project = merge_request.project
+        if not project.is_active or not project.source.is_active:
+            raise ReviewConfigurationError("The project or Git source is inactive.")
+        if not project.clone_url:
+            raise ReviewConfigurationError("The project has no clone URL.")
+        provider = project.ai_provider or AIProvider.objects.filter(is_default=True, is_active=True).first()
+        if provider is None or not provider.is_active:
+            raise ReviewConfigurationError("No active AI provider is configured.")
+        if Review.objects.filter(
+            merge_request=merge_request,
+            status__in=(Review.PENDING, Review.PROCESSING),
+        ).exists():
+            raise ReviewAlreadyRunningError("A review is already running for this merge request.")
+        from apps.reviews.tasks import run_manual_ai_review
+
+        return run_manual_ai_review.delay(merge_request.pk).id
 
 
 class ReviewActionService:
@@ -20,7 +52,13 @@ class ReviewActionService:
         adaptor = get_adaptor(review.merge_request.project.source)
         posted = 0
         for comment in review.comments.select_for_update().filter(external_comment_id=""):
-            external_id = adaptor.create_comment(review.merge_request.project, review.merge_request.external_iid, comment.file_path, comment.line_number, comment.content)
+            external_id = adaptor.create_comment(
+                review.merge_request.project,
+                review.merge_request.external_iid,
+                comment.file_path,
+                comment.line_number,
+                comment.content,
+            )
             comment.external_comment_id = external_id
             comment.save(update_fields=["external_comment_id", "updated_at"])
             posted += 1

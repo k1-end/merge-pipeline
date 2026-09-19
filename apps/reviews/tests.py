@@ -12,7 +12,7 @@ from apps.reviews.parsers import ReviewParseError, parse_review_response
 from apps.reviews.pipeline import BudgetExceededError, ReviewPipeline
 from apps.reviews.providers.base import ReviewRequest
 from apps.reviews.providers.opencode import OpenCodeProvider
-from apps.reviews.services import ReviewActionService
+from apps.reviews.services import ReviewActionService, ReviewAlreadyRunningError, ReviewQueueService
 from apps.sources.models import GitSource
 
 
@@ -95,6 +95,18 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
     assert response.summary == '{"summary":"ok","findings":[]}'
     command = run.call_args.args[0]
     assert command[:7] == ["opencode", "run", "--dir", "review-workspace", "--agent", "review", "--format"]
+
+
+def test_manual_review_queue_rejects_active_duplicate(merge_request: MergeRequest) -> None:
+    """A second dashboard request cannot create concurrent reviews."""
+    merge_request.project.clone_url = "https://github.com/org/api.git"
+    merge_request.project.save(update_fields=["clone_url", "updated_at"])
+    provider = AIProvider.objects.create(
+        name="default", provider_type=AIProvider.CUSTOM, model_name="mock", is_default=True
+    )
+    Review.objects.create(merge_request=merge_request, provider=provider, status=Review.PROCESSING)
+    with pytest.raises(ReviewAlreadyRunningError):
+        ReviewQueueService.queue_manual_review(merge_request)
 
 
 def test_pipeline_persists_structured_review(
