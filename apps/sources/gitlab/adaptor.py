@@ -35,9 +35,9 @@ class GitLabAdaptor(BaseGitAdaptor):
         ]
 
     def fetch_merge_requests(self, project: Any, updated_after: Any = None) -> list[dict]:
-        """Fetch opened and recently updated GitLab merge requests."""
+        """Fetch GitLab merge requests, optionally restricted to a time window."""
         params = {
-            "state": "opened",
+            "state": "all" if updated_after else "opened",
             "order_by": "updated_at",
             "sort": "desc",
             "per_page": 100,
@@ -48,28 +48,42 @@ class GitLabAdaptor(BaseGitAdaptor):
         results = []
         while True:
             data = self.client.get_json(f"projects/{project.external_id}/merge_requests", params=params)
-            results.extend(
-                {
-                    "external_id": str(item["id"]),
-                    "external_iid": str(item["iid"]),
-                    "title": item["title"],
-                    "description": item.get("description") or "",
-                    "state": "draft" if item.get("draft") else item["state"],
-                    "author_username": (item.get("author") or {}).get("username", "unknown"),
-                    "author_external_id": str((item.get("author") or {}).get("id", "")),
-                    "source_branch": item["source_branch"],
-                    "target_branch": item["target_branch"],
-                    "web_url": item["web_url"],
-                    "opened_at": provider_datetime(item["created_at"]),
-                    "external_updated_at": provider_datetime(item["updated_at"]),
-                    "merged_at": provider_datetime(item["merged_at"]) if item.get("merged_at") else None,
-                    "closed_at": provider_datetime(item["closed_at"]) if item.get("closed_at") else None,
-                }
-                for item in data
-            )
+            results.extend(self._normalize_merge_request(item) for item in data)
             if len(data) < params["per_page"]:
                 return results
             params["page"] += 1
+
+    def fetch_open_merge_request_iids(self, project: Any) -> set[str]:
+        """Fetch all currently open GitLab merge-request IIDs."""
+        return {item["external_iid"] for item in self.fetch_merge_requests(project) if item["state"] in {"opened", "draft"}}
+
+    def fetch_merge_request(self, project: Any, mr_iid: str) -> dict:
+        """Fetch and normalize one GitLab merge request."""
+        item = self.client.get_json(f"projects/{project.external_id}/merge_requests/{mr_iid}")
+        return self._normalize_merge_request(item)
+
+    @staticmethod
+    def _normalize_merge_request(item: dict) -> dict:
+        """Convert a GitLab merge request into the local merge-request shape."""
+        merged_at = provider_datetime(item["merged_at"]) if item.get("merged_at") else None
+        closed_at = provider_datetime(item["closed_at"]) if item.get("closed_at") else None
+        state = "merged" if merged_at else item["state"]
+        return {
+            "external_id": str(item["id"]),
+            "external_iid": str(item["iid"]),
+            "title": item["title"],
+            "description": item.get("description") or "",
+            "state": "draft" if item.get("draft") and state == "opened" else state,
+            "author_username": (item.get("author") or {}).get("username", "unknown"),
+            "author_external_id": str((item.get("author") or {}).get("id", "")),
+            "source_branch": item["source_branch"],
+            "target_branch": item["target_branch"],
+            "web_url": item["web_url"],
+            "opened_at": provider_datetime(item["created_at"]),
+            "external_updated_at": provider_datetime(item["updated_at"]),
+            "merged_at": merged_at,
+            "closed_at": closed_at,
+        }
 
     def fetch_mr_changes(self, project: Any, mr_iid: str) -> list[dict]:
         """Fetch changed files and diffs for a GitLab merge request."""

@@ -114,6 +114,28 @@ def test_github_fetch_merge_requests_rejects_noncanonical_repository() -> None:
     adaptor.client.get_json.assert_not_called()
 
 
+def test_github_fetch_merge_requests_normalizes_closed_and_merged_states() -> None:
+    adaptor = GitHubAdaptor.__new__(GitHubAdaptor)
+    item = {
+        "id": 1,
+        "number": 147,
+        "title": "Closed PR",
+        "user": {"login": "user", "id": 2},
+        "head": {"ref": "feature"},
+        "base": {"ref": "main"},
+        "html_url": "https://github.com/example/repo/pull/147",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-02T00:00:00Z",
+        "closed_at": "2026-01-02T00:00:00Z",
+        "merged_at": None,
+    }
+
+    normalized = adaptor._normalize_merge_request(item)
+
+    assert normalized["state"] == "closed"
+    assert normalized["closed_at"] is not None
+
+
 def test_source_client_does_not_treat_http_404_as_transient(
     settings: Any,
 ) -> None:

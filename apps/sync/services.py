@@ -53,10 +53,14 @@ class SyncService:
             for item in adaptor.fetch_merge_requests(project, project.last_synced_at):
                 defaults = {key: value for key, value in item.items() if key not in {"external_iid"}}
                 with transaction.atomic():
+                    existing = MergeRequest.objects.filter(
+                        project=project, external_iid=item["external_iid"]
+                    ).first()
                     mr, created = MergeRequest.objects.update_or_create(
                         project=project, external_iid=item["external_iid"], defaults=defaults
                     )
-                    self._sync_changes(adaptor, project, mr)
+                    if created or (existing and self._merge_request_content_changed(existing, item)):
+                        self._sync_changes(adaptor, project, mr)
                 counts["new_mrs" if created else "updated_mrs"] += 1
             project.last_synced_at = timezone.now()
             project.save(update_fields=["last_synced_at", "updated_at"])
@@ -74,6 +78,44 @@ class SyncService:
             log.duration_ms = int((monotonic() - started) * 1000)
             log.save(update_fields=["status", "new_mrs", "updated_mrs", "mr_count", "error_count", "error_details", "completed_at", "duration_ms", "updated_at"])
         return counts
+
+    def reconcile_active_merge_requests(self, project: Project, dry_run: bool = False) -> dict[str, int]:
+        """Refresh local active requests that may have closed remotely."""
+        adaptor = get_adaptor(project.source)
+        active = MergeRequest.objects.filter(
+            project=project, state__in=[MergeRequest.OPENED, MergeRequest.DRAFT]
+        ).only("id", "external_iid", "state")
+        remote_open = adaptor.fetch_open_merge_request_iids(project)
+        counts = {"checked": 0, "updated": 0, "unchanged": 0, "failed": 0}
+        for mr in active.iterator(chunk_size=500):
+            counts["checked"] += 1
+            if mr.external_iid in remote_open:
+                counts["unchanged"] += 1
+                continue
+            try:
+                item = adaptor.fetch_merge_request(project, mr.external_iid)
+                if item["state"] not in {MergeRequest.OPENED, MergeRequest.DRAFT}:
+                    if not dry_run:
+                        MergeRequest.objects.filter(pk=mr.pk).update(
+                            state=item["state"],
+                            external_updated_at=item["external_updated_at"],
+                            merged_at=item["merged_at"],
+                            closed_at=item["closed_at"],
+                        )
+                    counts["updated"] += 1
+                else:
+                    counts["unchanged"] += 1
+            except Exception:  # noqa: BLE001 - one stale request must not abort the repair
+                counts["failed"] += 1
+        return counts
+
+    @staticmethod
+    def _merge_request_content_changed(mr: MergeRequest, item: dict) -> bool:
+        """Return whether a remote update requires refreshing the file snapshot."""
+        return any(
+            getattr(mr, field) != item[field]
+            for field in ("source_branch", "target_branch", "title", "description")
+        )
 
     def _sync_changes(self, adaptor: Any, project: Project, mr: MergeRequest) -> None:
         """Replace the current file snapshot for a merge request."""

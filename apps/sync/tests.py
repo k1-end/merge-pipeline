@@ -9,7 +9,7 @@ from cryptography.fernet import Fernet
 
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
-from apps.projects.models import Project
+from apps.projects.models import MergeRequest, Project
 from apps.sources.exceptions import AdaptorConfigurationError
 from apps.sources.models import GitSource
 from apps.sync.models import WebhookEvent
@@ -104,3 +104,47 @@ def test_sync_source_does_not_clear_existing_clone_url(source: GitSource, monkey
 
     project.refresh_from_db()
     assert project.clone_url == "https://github.com/org/api.git"
+
+
+def test_reconcile_active_merge_requests_closes_stale_local_request(
+    source: GitSource, monkeypatch: Any
+) -> None:
+    """A locally open request is updated when the provider reports it closed."""
+    project = Project.objects.create(
+        source=source,
+        external_id="1",
+        name="api",
+        full_name="org/api",
+        web_url="https://github.com/org/api",
+    )
+    mr = MergeRequest.objects.create(
+        project=project,
+        external_id="external-147",
+        external_iid="147",
+        title="Closed PR",
+        state=MergeRequest.OPENED,
+        author_username="user",
+        source_branch="feature",
+        target_branch="main",
+        web_url="https://github.com/org/api/pull/147",
+        opened_at="2026-01-01T00:00:00Z",
+        external_updated_at="2026-01-01T00:00:00Z",
+    )
+    adaptor = Mock(
+        fetch_open_merge_request_iids=Mock(return_value=set()),
+        fetch_merge_request=Mock(
+            return_value={
+                "state": MergeRequest.CLOSED,
+                "external_updated_at": "2026-01-02T00:00:00Z",
+                "merged_at": None,
+                "closed_at": "2026-01-02T00:00:00Z",
+            }
+        ),
+    )
+    monkeypatch.setattr("apps.sync.services.get_adaptor", lambda source: adaptor)
+
+    result = SyncService().reconcile_active_merge_requests(project)
+
+    mr.refresh_from_db()
+    assert result == {"checked": 1, "updated": 1, "unchanged": 0, "failed": 0}
+    assert mr.state == MergeRequest.CLOSED

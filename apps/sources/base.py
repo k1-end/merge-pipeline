@@ -36,6 +36,14 @@ class BaseGitAdaptor(ABC):
         """Return normalized merge requests for a repository."""
 
     @abstractmethod
+    def fetch_open_merge_request_iids(self, project: Any) -> set[str]:
+        """Return the provider identifiers for currently open merge requests."""
+
+    @abstractmethod
+    def fetch_merge_request(self, project: Any, mr_iid: str) -> dict:
+        """Return one normalized merge request by provider identifier."""
+
+    @abstractmethod
     def fetch_mr_changes(self, project: Any, mr_iid: str) -> list[dict]:
         """Return normalized changed files for a merge request."""
 

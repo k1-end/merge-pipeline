@@ -37,7 +37,7 @@ class GitHubAdaptor(BaseGitAdaptor):
         ]
 
     def fetch_merge_requests(self, project: Any, updated_after: Any = None) -> list[dict]:
-        """Fetch open GitHub pull requests for a repository."""
+        """Fetch GitHub pull requests, optionally restricted to a time window."""
         if project.full_name.count("/") != 1 or any(part == "" for part in project.full_name.split("/")):
             raise AdaptorConfigurationError(
                 "GitHub project full_name must use the owner/repository format"
@@ -48,7 +48,7 @@ class GitHubAdaptor(BaseGitAdaptor):
             data = self.client.get_json(
                 f"repos/{project.full_name}/pulls",
                 params={
-                    "state": "open",
+                    "state": "all" if updated_after else "open",
                     "sort": "updated",
                     "direction": "desc",
                     "per_page": 100,
@@ -59,27 +59,45 @@ class GitHubAdaptor(BaseGitAdaptor):
                 updated = provider_datetime(item["updated_at"])
                 if updated_after and updated <= updated_after:
                     continue
-                results.append(
-                    {
-                        "external_id": str(item["id"]),
-                        "external_iid": str(item["number"]),
-                        "title": item["title"],
-                        "description": item.get("body") or "",
-                        "state": "draft" if item.get("draft") else "opened",
-                        "author_username": (item.get("user") or {}).get("login", "unknown"),
-                        "author_external_id": str((item.get("user") or {}).get("id", "")),
-                        "source_branch": item["head"]["ref"],
-                        "target_branch": item["base"]["ref"],
-                        "web_url": item["html_url"],
-                        "opened_at": provider_datetime(item["created_at"]),
-                        "external_updated_at": updated,
-                        "merged_at": None,
-                        "closed_at": None,
-                    }
-                )
+                results.append(self._normalize_merge_request(item))
+            if updated_after and data and provider_datetime(data[-1]["updated_at"]) <= updated_after:
+                return results
             if len(data) < 100:
                 return results
             page += 1
+
+    def fetch_open_merge_request_iids(self, project: Any) -> set[str]:
+        """Fetch all currently open GitHub pull-request numbers."""
+        return {item["external_iid"] for item in self.fetch_merge_requests(project) if item["state"] in {"opened", "draft"}}
+
+    def fetch_merge_request(self, project: Any, mr_iid: str) -> dict:
+        """Fetch and normalize one GitHub pull request."""
+        data = self.client.get_json(f"repos/{project.full_name}/pulls/{mr_iid}")
+        return self._normalize_merge_request(data)
+
+    @staticmethod
+    def _normalize_merge_request(item: dict) -> dict:
+        """Convert a GitHub pull request into the local merge-request shape."""
+        updated = provider_datetime(item["updated_at"])
+        merged_at = provider_datetime(item["merged_at"]) if item.get("merged_at") else None
+        closed_at = provider_datetime(item["closed_at"]) if item.get("closed_at") else None
+        state = "merged" if merged_at else "closed" if closed_at else "opened"
+        return {
+            "external_id": str(item["id"]),
+            "external_iid": str(item["number"]),
+            "title": item["title"],
+            "description": item.get("body") or "",
+            "state": "draft" if item.get("draft") and state == "opened" else state,
+            "author_username": (item.get("user") or {}).get("login", "unknown"),
+            "author_external_id": str((item.get("user") or {}).get("id", "")),
+            "source_branch": item["head"]["ref"],
+            "target_branch": item["base"]["ref"],
+            "web_url": item["html_url"],
+            "opened_at": provider_datetime(item["created_at"]),
+            "external_updated_at": updated,
+            "merged_at": merged_at,
+            "closed_at": closed_at,
+        }
 
     def fetch_mr_changes(self, project: Any, mr_iid: str) -> list[dict]:
         """Fetch changed files and patches for a GitHub pull request."""
