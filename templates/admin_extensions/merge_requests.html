@@ -1,8 +1,68 @@
 {% extends "admin_extensions/base.html" %}
 {% block title %}Merge requests{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/choices.js@11.1.0/public/assets/styles/choices.min.css">
+<style>
+  .merge-request-filter .choices {
+    margin-bottom: 0;
+    font-size: .9375rem;
+  }
+
+  .merge-request-filter .choices__inner {
+    min-height: 38px;
+    padding: .375rem 2.25rem .375rem .75rem;
+    border: 1px solid #d9dee3;
+    border-radius: .375rem;
+    background-color: #fff;
+    color: #697a8d;
+    font-size: .9375rem;
+    line-height: 1.5;
+  }
+
+  .merge-request-filter .choices.is-focused .choices__inner,
+  .merge-request-filter .choices.is-open .choices__inner {
+    border-color: #696cff;
+    box-shadow: 0 0 0 .15rem rgba(105, 108, 255, .16);
+  }
+
+  .merge-request-filter .choices__list--single {
+    padding: 0;
+  }
+
+  .merge-request-filter .choices__list--dropdown {
+    z-index: 10;
+    border-color: #d9dee3;
+    border-radius: .375rem;
+    box-shadow: 0 .25rem .75rem rgba(67, 89, 113, .15);
+  }
+
+  .merge-request-filter .choices__list--dropdown .choices__item {
+    padding: .5rem .75rem;
+    color: #697a8d;
+  }
+
+  .merge-request-filter .choices__list--dropdown .choices__item--selectable.is-highlighted {
+    background-color: #f0f0ff;
+    color: #696cff;
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="mb-4"><h4 class="fw-bold mb-1">Merge requests</h4><p class="text-muted mb-0">Imported requests across all configured Git sources.</p></div>
+<div class="card mb-4"><div class="card-body"><form method="get" class="merge-request-filter row align-items-end g-3"><div class="col-12 col-md-6"><label for="project-filter" class="form-label">Project</label><select id="project-filter" name="project" class="form-select"><option value="">All projects</option>{% for project in projects %}<option value="{{ project.pk }}" {% if selected_project == project.pk|stringformat:'s' %}selected{% endif %}>{{ project.full_name }}</option>{% endfor %}</select></div><div class="col-12 col-md-auto"><button type="submit" class="btn btn-primary">Filter</button>{% if selected_project %}<a href="{% url 'admin_extensions:merge_requests' %}" class="btn btn-label-secondary ms-2">Clear</a>{% endif %}</div></form></div></div>
 <div class="card"><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Request</th><th>Project</th><th>Author</th><th>Status</th><th>AI review</th><th>Updated</th><th></th></tr></thead><tbody>
 {% for merge_request in merge_requests %}<tr><td><a href="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}"><div class="fw-semibold">!{{ merge_request.external_iid }} {{ merge_request.title|truncatechars:55 }}</div><small class="text-muted">{{ merge_request.source_branch }} → {{ merge_request.target_branch }}</small></a></td><td>{{ merge_request.project.name }}</td><td>{{ merge_request.author_username }}</td><td><span class="badge {% if merge_request.state == 'opened' %}bg-label-success{% elif merge_request.state == 'draft' %}bg-label-warning{% elif merge_request.state == 'merged' %}bg-label-primary{% else %}bg-label-secondary{% endif %}">{{ merge_request.get_state_display }}</span></td><td>{% if merge_request.latest_review %}<span class="badge {% if merge_request.latest_review.status == 'completed' %}bg-label-success{% elif merge_request.latest_review.status == 'failed' %}bg-label-danger{% elif merge_request.latest_review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ merge_request.latest_review.get_status_display }}</span>{% else %}<span class="text-muted small">No review</span>{% endif %}</td><td>{{ merge_request.external_updated_at|date:"M j, Y H:i" }}</td><td class="text-nowrap"><form method="post" action="{% url 'admin_extensions:run_merge_request_review' merge_request.pk %}" class="d-inline">{% csrf_token %}<button type="submit" class="btn btn-sm btn-icon btn-label-primary" title="Run AI review" {% if merge_request.latest_review.status == 'pending' or merge_request.latest_review.status == 'processing' %}disabled{% endif %}><i class="bx bx-bot"></i></button></form> <a href="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}" class="btn btn-sm btn-label-secondary" title="View merge request"><i class="bx bx-show me-1"></i>View details</a></td></tr>{% empty %}<tr><td colspan="7" class="text-center text-muted py-5">No merge requests have been imported yet.</td></tr>{% endfor %}
 </tbody></table></div></div>
+{% endblock %}
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/choices.js@11.1.0/public/assets/scripts/choices.min.js"></script>
+<script>
+  new Choices('#project-filter', {
+    searchEnabled: true,
+    searchPlaceholderValue: 'Search projects...',
+    itemSelectText: '',
+    shouldSort: false,
+    allowHTML: false,
+  });
+</script>
 {% endblock %}

@@ -194,6 +194,70 @@ class DashboardAccessTests(TestCase):
             reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]),
         )
 
+    def test_merge_request_index_filters_by_project(self) -> None:
+        """The project selector limits rows while retaining the selected option."""
+        user = get_user_model().objects.create_user(username="operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="filter-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        selected_project = Project.objects.create(
+            source=source,
+            external_id="filter-selected",
+            name="web",
+            full_name="org/web",
+            web_url="https://github.com/org/web",
+        )
+        other_project = Project.objects.create(
+            source=source,
+            external_id="filter-other",
+            name="api",
+            full_name="org/api",
+            web_url="https://github.com/org/api",
+        )
+        for project, external_id, title in (
+            (selected_project, "31", "Selected request"),
+            (other_project, "32", "Other request"),
+        ):
+            MergeRequest.objects.create(
+                project=project,
+                external_id=external_id,
+                external_iid=external_id,
+                title=title,
+                state=MergeRequest.OPENED,
+                author_username="dev",
+                source_branch="feature",
+                target_branch="main",
+                web_url=f"https://github.com/{project.full_name}/pull/{external_id}",
+                opened_at=timezone.now(),
+                external_updated_at=timezone.now(),
+            )
+
+        response = self.client.get(
+            reverse("admin_extensions:merge_requests"), {"project": selected_project.pk}
+        )
+
+        self.assertContains(response, "Selected request")
+        self.assertNotContains(response, "Other request")
+        self.assertContains(response, f'value="{selected_project.pk}" selected')
+        self.assertContains(response, "choices.js@11.1.0/public/assets/styles/choices.min.css")
+        self.assertNotContains(response, "public/assets/styles/base.min.css")
+        self.assertContains(response, "choices.min.js")
+
+    def test_merge_request_index_ignores_invalid_project_filter(self) -> None:
+        """An unknown project value returns an empty result instead of an error."""
+        user = get_user_model().objects.create_user(username="operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("admin_extensions:merge_requests"), {"project": "unknown"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No merge requests have been imported yet.")
+
     def test_merge_request_detail_renders_request_context(self) -> None:
         """Staff users can inspect a request without leaving the operations panel."""
         user = get_user_model().objects.create_user(username="operator", password="test-password")

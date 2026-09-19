@@ -138,6 +138,7 @@ def clone_project_cache(request: HttpRequest, pk: int) -> HttpResponse:
 @staff_member_required(login_url="admin:login")
 def merge_requests(request: HttpRequest) -> HttpResponse:
     """Render imported merge requests in the panel."""
+    selected_project = request.GET.get("project", "")
     merge_request_list = (
         MergeRequest.objects.select_related("project", "project__source")
         .prefetch_related(
@@ -149,11 +150,25 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
         )
         .order_by("-external_updated_at", "-id")
     )
+    if selected_project.isdigit():
+        merge_request_list = merge_request_list.filter(project_id=selected_project)
+    elif selected_project:
+        merge_request_list = merge_request_list.none()
+
+    projects = Project.objects.order_by("full_name")
     for merge_request in merge_request_list:
         merge_request.latest_review = (
             merge_request.recent_reviews[0] if merge_request.recent_reviews else None
         )
-    return render(request, "admin_extensions/merge_requests.html", {"merge_requests": merge_request_list})
+    return render(
+        request,
+        "admin_extensions/merge_requests.html",
+        {
+            "merge_requests": merge_request_list,
+            "projects": projects,
+            "selected_project": selected_project,
+        },
+    )
 
 
 @staff_member_required(login_url="admin:login")
