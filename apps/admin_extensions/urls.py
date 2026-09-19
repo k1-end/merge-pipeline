@@ -7,6 +7,11 @@ app_name = "admin_extensions"
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
     path("sync/", views.sync_merge_requests, name="sync_merge_requests"),
+    path(
+        "merge-requests/review-all/",
+        views.run_all_unreviewed_merge_requests,
+        name="run_all_unreviewed_merge_requests",
+    ),
     path("merge-requests/<int:pk>/", views.merge_request_detail, name="merge_request_detail"),
     path("merge-requests/<int:pk>/review/", views.run_merge_request_review, name="run_merge_request_review"),
     path("projects/", views.projects, name="projects"),

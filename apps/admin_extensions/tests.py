@@ -8,6 +8,7 @@ from django.utils import timezone
 from apps.credentials.models import GitSourceCredential
 from apps.projects.models import MergeRequest, Project
 from apps.reviews.models import AIProvider, Review, ReviewComment
+from apps.reviews.services import ReviewConfigurationError
 from apps.sources.models import GitSource
 
 
@@ -138,7 +139,9 @@ class DashboardAccessTests(TestCase):
         self.assertContains(response, "The change is focused and ready for review.")
         self.assertContains(response, "templates/reviews.html")
         self.assertContains(response, "Review detail model")
-        self.assertContains(response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]))
+        self.assertContains(
+            response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk])
+        )
 
     def test_reviews_index_links_to_review_detail(self) -> None:
         """Each review row exposes its dedicated show page."""
@@ -316,15 +319,15 @@ class DashboardAccessTests(TestCase):
             external_updated_at=timezone.now(),
         )
 
-        response = self.client.get(
-            reverse("admin_extensions:merge_request_detail", args=[merge_request.pk])
-        )
+        response = self.client.get(reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Improve dashboard")
         self.assertContains(response, "feature/dashboard")
         self.assertContains(response, "No AI review yet")
-        self.assertContains(response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]))
+        self.assertContains(
+            response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk])
+        )
 
     def test_source_management_stays_inside_panel_and_encrypts_token(self) -> None:
         user = get_user_model().objects.create_user(username="operator", password="test-password")
@@ -432,6 +435,108 @@ class DashboardAccessTests(TestCase):
         """Review execution is never triggered by a GET request."""
         response = self.client.get(reverse("admin_extensions:run_merge_request_review", args=[1]))
         self.assertEqual(response.status_code, 302)
+
+    def test_bulk_review_queues_only_opened_unreviewed_merge_requests(self) -> None:
+        """The bulk action excludes reviewed, draft, and closed merge requests."""
+        user = get_user_model().objects.create_user(username="bulk-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="bulk-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="bulk-project",
+            name="api",
+            full_name="org/api",
+            web_url="https://github.com/org/api",
+        )
+
+        def create_merge_request(external_iid: str, state: str = MergeRequest.OPENED) -> MergeRequest:
+            return MergeRequest.objects.create(
+                project=project,
+                external_id=external_iid,
+                external_iid=external_iid,
+                title=f"Request {external_iid}",
+                state=state,
+                author_username="dev",
+                source_branch=f"feature/{external_iid}",
+                target_branch="main",
+                web_url=f"https://github.com/org/api/pull/{external_iid}",
+                opened_at=timezone.now(),
+                external_updated_at=timezone.now(),
+            )
+
+        queued_one = create_merge_request("101")
+        queued_two = create_merge_request("102")
+        reviewed = create_merge_request("103")
+        create_merge_request("104", MergeRequest.CLOSED)
+        create_merge_request("105", MergeRequest.DRAFT)
+        provider = AIProvider.objects.create(
+            name="Bulk review model", provider_type=AIProvider.OPENAI, model_name="reviewer"
+        )
+        Review.objects.create(merge_request=reviewed, provider=provider, status=Review.COMPLETED)
+
+        with patch(
+            "apps.admin_extensions.views.ReviewQueueService.queue_manual_review", return_value="task-id"
+        ) as queue_review:
+            response = self.client.post(reverse("admin_extensions:run_all_unreviewed_merge_requests"))
+
+        self.assertRedirects(response, reverse("admin_extensions:merge_requests"))
+        self.assertEqual(queue_review.call_count, 2)
+        self.assertCountEqual(
+            [call.args[0].pk for call in queue_review.call_args_list], [queued_one.pk, queued_two.pk]
+        )
+        messages = list(response.wsgi_request._messages)
+        self.assertTrue(any("Queued 2 AI review(s)." in str(message) for message in messages))
+
+    def test_bulk_review_reports_skipped_merge_requests(self) -> None:
+        """A configuration failure does not prevent other bulk reviews from being queued."""
+        user = get_user_model().objects.create_user(username="skip-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="skip-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="skip-project",
+            name="api",
+            full_name="org/skip-api",
+            web_url="https://github.com/org/skip-api",
+        )
+        for index in (201, 202):
+            MergeRequest.objects.create(
+                project=project,
+                external_id=str(index),
+                external_iid=str(index),
+                title=f"Request {index}",
+                state=MergeRequest.OPENED,
+                author_username="dev",
+                source_branch=f"feature/{index}",
+                target_branch="main",
+                web_url=f"https://github.com/org/skip-api/pull/{index}",
+                opened_at=timezone.now(),
+                external_updated_at=timezone.now(),
+            )
+
+        with patch(
+            "apps.admin_extensions.views.ReviewQueueService.queue_manual_review",
+            side_effect=["task-id", ReviewConfigurationError("No active AI provider is configured.")],
+        ):
+            response = self.client.post(
+                reverse("admin_extensions:run_all_unreviewed_merge_requests"),
+                {"project": str(project.pk)},
+            )
+
+        self.assertRedirects(
+            response,
+            f"{reverse('admin_extensions:merge_requests')}?project={project.pk}",
+        )
+        messages = list(response.wsgi_request._messages)
+        self.assertTrue(any("Queued 1 AI review(s); skipped 1." in str(message) for message in messages))
 
     def test_projects_page_can_queue_repository_cache_clone(self) -> None:
         """Staff can request repository caching from the projects web interface."""

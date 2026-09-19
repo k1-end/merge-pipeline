@@ -1,8 +1,9 @@
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
-from django.db.models import Prefetch
+from django.db.models import Exists, OuterRef, Prefetch
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 
 from apps.admin_extensions.forms import ProviderForm, SourceForm
 from apps.projects.models import MergeRequest, Project
@@ -77,6 +78,44 @@ def run_merge_request_review(request: HttpRequest, pk: int) -> HttpResponse:
     else:
         messages.success(request, f"AI review queued for !{merge_request.external_iid}.")
     return redirect("admin_extensions:dashboard")
+
+
+@staff_member_required(login_url="admin:login")
+def run_all_unreviewed_merge_requests(request: HttpRequest) -> HttpResponse:
+    """Queue reviews for all opened merge requests without review history."""
+    if request.method != "POST":
+        return HttpResponse(status=405)
+
+    selected_project = request.POST.get("project", "")
+    merge_requests = (
+        MergeRequest.objects.filter(state=MergeRequest.OPENED)
+        .annotate(has_review=Exists(Review.objects.filter(merge_request=OuterRef("pk"))))
+        .filter(has_review=False)
+    )
+    if selected_project.isdigit():
+        merge_requests = merge_requests.filter(project_id=selected_project)
+    elif selected_project:
+        merge_requests = merge_requests.none()
+
+    queued = 0
+    skipped = 0
+    for merge_request in merge_requests.select_related("project", "project__source", "project__ai_provider"):
+        try:
+            ReviewQueueService.queue_manual_review(merge_request)
+        except (ReviewAlreadyRunningError, ReviewConfigurationError) as exc:
+            skipped += 1
+            messages.warning(request, f"!{merge_request.external_iid} was skipped: {exc}")
+        else:
+            queued += 1
+
+    if skipped:
+        messages.warning(request, f"Queued {queued} AI review(s); skipped {skipped}.")
+    else:
+        messages.success(request, f"Queued {queued} AI review(s).")
+
+    if selected_project:
+        return redirect(f"{reverse('admin_extensions:merge_requests')}?project={selected_project}")
+    return redirect("admin_extensions:merge_requests")
 
 
 @staff_member_required(login_url="admin:login")
