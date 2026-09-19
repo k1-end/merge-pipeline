@@ -1,0 +1,54 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "flearning/gpt-5.6-luna",
+  "provider": {
+    "locallmstudio": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "locallmstudio",
+      "options": {
+        "baseURL": "http://192.168.81.109:1234/v1",
+        "headers": {
+          "Authorization": "apikey *********************************"
+        }
+      },
+      "models": {
+        "gemma-4-e4b-it": {
+          "name": "gemma-4-e4b-it",
+          "limit": {
+            "context": 128000,
+            "output": 128000
+          },
+          "options": {
+            "textVerbosity": "low",
+            "reasoningSummary": "on"
+          }
+        }
+      }
+    },
+    "flearning": {
+      "npm": "@ai-sdk/openai",
+      "name": "FLearning Proxy",
+      "options": {
+        "baseURL": "https://claude.flearning.ir/backend-api/codex",
+        "apiKey": "{env:FLEARNING_API_KEY}",
+        "headers": {
+          "x-openai-actor-authorization": "enabled"
+        }
+      },
+      "models": {
+        "gpt-5.5": {
+          "name": "GPT-5.5"
+        },
+        "gpt-5.6-sol": {
+          "name": "GPT-5.6 Sol"
+        },
+        "gpt-5.6-terra": {
+          "name": "GPT-5.6 Terra"
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT-5.6 Luna"
+        }
+      }
+    }
+  }
+}

@@ -68,9 +68,12 @@ services:
       dockerfile: .docker/dev/Dockerfile
     env_file:
       - ../../.env
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      OPENCODE_CONFIG: /etc/opencode/opencode.jsonc
     volumes:
       - ../..:/app
+      - ./opencode.jsonc:/etc/opencode/opencode.jsonc:ro
     depends_on:
       db:
         condition: service_healthy
