@@ -183,6 +183,51 @@ class DashboardAccessTests(TestCase):
 
         self.assertContains(response, reverse("admin_extensions:review_detail", args=[review.pk]))
 
+    def test_reviews_index_paginates_at_25_items(self) -> None:
+        user = get_user_model().objects.create_user(username="review-pages", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="review-pages-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="review-pages-project",
+            name="api",
+            full_name="org/api",
+            web_url="https://github.com/org/api",
+        )
+        provider = AIProvider.objects.create(
+            name="Pages model", provider_type=AIProvider.OPENCODE, model_name="reviewer"
+        )
+        for index in range(26):
+            merge_request = MergeRequest.objects.create(
+                project=project,
+                external_id=str(index),
+                external_iid=str(index),
+                title=f"Review request {index}",
+                state=MergeRequest.OPENED,
+                author_username="dev",
+                source_branch="feature",
+                target_branch="main",
+                web_url=f"https://github.com/org/api/pull/{index}",
+                opened_at=timezone.now(),
+                external_updated_at=timezone.now(),
+            )
+            Review.objects.create(merge_request=merge_request, provider=provider)
+
+        first_page = self.client.get(reverse("admin_extensions:reviews"))
+        second_page = self.client.get(reverse("admin_extensions:reviews"), {"page": 2})
+
+        self.assertEqual(first_page.context["reviews"].paginator.num_pages, 2)
+        self.assertEqual(len(first_page.context["reviews"].object_list), 25)
+        self.assertEqual(len(second_page.context["reviews"].object_list), 1)
+        self.assertContains(first_page, 'aria-label="AI reviews pages"')
+        self.assertContains(first_page, "page=2")
+        self.assertContains(first_page, ">1</td>")
+        self.assertContains(second_page, ">26</td>")
+
     def test_merge_request_index_shows_manual_review_action(self) -> None:
         """The full merge-request index exposes the manual review action."""
         user = get_user_model().objects.create_user(username="operator", password="test-password")
@@ -275,6 +320,46 @@ class DashboardAccessTests(TestCase):
         self.assertContains(response, "choices.js@11.1.0/public/assets/styles/choices.min.css")
         self.assertNotContains(response, "public/assets/styles/base.min.css")
         self.assertContains(response, "choices.min.js")
+
+    def test_merge_request_index_paginates_and_preserves_project_filter(self) -> None:
+        user = get_user_model().objects.create_user(username="merge-request-pages", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="merge-request-pages-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="merge-request-pages-project",
+            name="web",
+            full_name="org/web",
+            web_url="https://github.com/org/web",
+        )
+        for index in range(26):
+            MergeRequest.objects.create(
+                project=project,
+                external_id=str(index),
+                external_iid=str(index),
+                title=f"Merge request {index}",
+                state=MergeRequest.OPENED,
+                author_username="dev",
+                source_branch="feature",
+                target_branch="main",
+                web_url=f"https://github.com/org/web/pull/{index}",
+                opened_at=timezone.now(),
+                external_updated_at=timezone.now(),
+            )
+
+        response = self.client.get(
+            reverse("admin_extensions:merge_requests"), {"project": project.pk, "page": 2}
+        )
+
+        self.assertEqual(response.context["merge_requests"].paginator.num_pages, 2)
+        self.assertEqual(len(response.context["merge_requests"].object_list), 1)
+        self.assertContains(response, 'aria-label="Merge request pages"')
+        self.assertContains(response, f"project={project.pk}&amp;page=1")
+        self.assertContains(response, ">26</td>")
 
     def test_merge_request_index_ignores_invalid_project_filter(self) -> None:
         """An unknown project value returns an empty result instead of an error."""

@@ -1,5 +1,6 @@
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
+from django.core.paginator import Paginator
 from django.db.models import Exists, OuterRef, Prefetch
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -218,7 +219,8 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
         merge_request_list = merge_request_list.none()
 
     projects = Project.objects.order_by("full_name")
-    for merge_request in merge_request_list:
+    merge_requests_page = Paginator(merge_request_list, 25).get_page(request.GET.get("page"))
+    for merge_request in merge_requests_page:
         merge_request.latest_review = (
             merge_request.recent_reviews[0] if merge_request.recent_reviews else None
         )
@@ -226,7 +228,8 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
         request,
         "admin_extensions/merge_requests.html",
         {
-            "merge_requests": merge_request_list,
+            "merge_requests": merge_requests_page,
+            "merge_requests_page": merge_requests_page,
             "projects": projects,
             "selected_project": selected_project,
         },
@@ -237,7 +240,8 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
 def reviews(request: HttpRequest) -> HttpResponse:
     """Render recent AI reviews and their current status."""
     review_list = Review.objects.select_related("merge_request", "provider").order_by("-created_at", "-id")
-    return render(request, "admin_extensions/reviews.html", {"reviews": review_list})
+    reviews_page = Paginator(review_list, 25).get_page(request.GET.get("page"))
+    return render(request, "admin_extensions/reviews.html", {"reviews": reviews_page, "reviews_page": reviews_page})
 
 
 @staff_member_required(login_url="admin:login")
