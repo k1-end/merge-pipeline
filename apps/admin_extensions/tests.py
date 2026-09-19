@@ -341,3 +341,33 @@ class DashboardAccessTests(TestCase):
         """Review execution is never triggered by a GET request."""
         response = self.client.get(reverse("admin_extensions:run_merge_request_review", args=[1]))
         self.assertEqual(response.status_code, 302)
+
+    def test_projects_page_can_queue_repository_cache_clone(self) -> None:
+        """Staff can request repository caching from the projects web interface."""
+        user = get_user_model().objects.create_user(username="cache-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="cache-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="cache-project",
+            name="cached-api",
+            full_name="org/cached-api",
+            web_url="https://github.com/org/cached-api",
+            clone_url="https://github.com/org/cached-api.git",
+        )
+
+        response = self.client.get(reverse("admin_extensions:projects"))
+        self.assertContains(response, "Clone cache")
+        self.assertContains(response, reverse("admin_extensions:clone_project_cache", args=[project.pk]))
+
+        with patch("apps.reviews.tasks.clone_repository_cache.delay") as clone_delay:
+            response = self.client.post(reverse("admin_extensions:clone_project_cache", args=[project.pk]))
+
+        self.assertRedirects(response, reverse("admin_extensions:projects"))
+        clone_delay.assert_called_once_with(project.pk)
+        project.refresh_from_db()
+        self.assertEqual(project.cache_status, Project.CACHE_CLONING)

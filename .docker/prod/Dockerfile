@@ -47,6 +47,10 @@ RUN curl -fsSL https://opencode.ai/install | bash \
 
 COPY --chown=appuser:appuser . /app/
 
+# Docker copies this ownership into a newly created repository-cache volume.
+RUN mkdir -p /var/lib/merge-pipeline/repositories \
+    && chown -R appuser:appuser /var/lib/merge-pipeline
+
 USER appuser
 
 EXPOSE 8000

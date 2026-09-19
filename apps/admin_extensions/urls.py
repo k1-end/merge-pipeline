@@ -9,6 +9,7 @@ urlpatterns = [
     path("merge-requests/<int:pk>/", views.merge_request_detail, name="merge_request_detail"),
     path("merge-requests/<int:pk>/review/", views.run_merge_request_review, name="run_merge_request_review"),
     path("projects/", views.projects, name="projects"),
+    path("projects/<int:pk>/clone-cache/", views.clone_project_cache, name="clone_project_cache"),
     path("merge-requests/", views.merge_requests, name="merge_requests"),
     path("reviews/", views.reviews, name="reviews"),
     path("reviews/<int:pk>/", views.review_detail, name="review_detail"),

@@ -1,17 +1,13 @@
-"""Disposable repository workspaces for agent-based reviews."""
+"""Disposable worktrees created from persistent repository caches."""
 
-import os
-import stat
-import subprocess
 import tempfile
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from django.core.exceptions import ObjectDoesNotExist
-
-from apps.credentials.services import CredentialEncryption
 from apps.projects.models import Project
+from apps.reviews.repository_cache import RepositoryCache, RepositoryCacheError
 
 
 class WorkspaceError(RuntimeError):
@@ -40,71 +36,74 @@ Return only the requested JSON review result. Use repository-relative file paths
 
 
 class ReviewWorkspace(AbstractContextManager[str]):
-    """Clone a merge request source branch into a disposable directory."""
+    """Create a disposable worktree from a project's persistent bare cache."""
 
     def __init__(self, project: Project, source_branch: str):
         """Initialize a workspace for the requested source branch."""
         self.project = project
         self.source_branch = source_branch
         self._temporary: tempfile.TemporaryDirectory[str] | None = None
-        self._askpass: Path | None = None
+        self._workspace: Path | None = None
+        self._cache = RepositoryCache(project)
 
     def __enter__(self) -> str:
-        """Clone and check out the source branch."""
-        if not self.project.clone_url:
-            raise WorkspaceError("Project has no clone URL")
+        """Fetch and check out the source branch without cloning the repository."""
         try:
-            credential = self.project.source.credential
-        except ObjectDoesNotExist:
-            credential = None
-        if credential is None or not credential.access_token_encrypted:
-            raise WorkspaceError("Project has no Git credential")
-
-        self._temporary = tempfile.TemporaryDirectory(prefix="merge-review-")
-        workspace = Path(self._temporary.name)
-        token = CredentialEncryption().decrypt(credential.access_token_encrypted)
-        self._askpass = workspace.parent / f"{workspace.name}-askpass"
-        self._askpass.write_text(
-            '#!/bin/sh\ncase "$1" in\n*Username*) printf \'%s\\n\' "$GIT_REVIEW_USERNAME" ;;\n*) printf \'%s\\n\' "$GIT_REVIEW_TOKEN" ;;\nesac\n',
-            encoding="utf-8",
-        )
-        self._askpass.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "GIT_ASKPASS": str(self._askpass),
-                "GIT_REVIEW_USERNAME": (
-                    "oauth2" if self.project.source.source_type == "gitlab" else "x-access-token"
-                ),
-                "GIT_REVIEW_TOKEN": token,
-                "GIT_TERMINAL_PROMPT": "0",
-            }
-        )
-        try:
-            self._run(["git", "clone", "--no-checkout", self.project.clone_url, str(workspace)], environment)
-            self._run(["git", "-C", str(workspace), "fetch", "origin", self.source_branch], environment)
-            self._run(["git", "-C", str(workspace), "checkout", "--detach", "FETCH_HEAD"], environment)
-            agent_path = workspace / ".opencode" / "agents" / "review.md"
+            self._cache.ensure_exists()
+            self._cache.run(["git", "check-ref-format", "--branch", self.source_branch])
+            self._temporary = tempfile.TemporaryDirectory(prefix="merge-review-")
+            self._workspace = Path(self._temporary.name) / "checkout"
+            review_ref = f"refs/merge-pipeline/workspaces/{uuid4().hex}"
+            refspec = f"+refs/heads/{self.source_branch}:{review_ref}"
+            with self._cache.git_environment() as environment, self._cache.locked():
+                self._cache.run(
+                    ["git", "--git-dir", str(self._cache.path), "fetch", "origin", refspec],
+                    environment,
+                )
+                self._cache.run(
+                    [
+                        "git",
+                        "--git-dir",
+                        str(self._cache.path),
+                        "worktree",
+                        "add",
+                        "--detach",
+                        str(self._workspace),
+                        review_ref,
+                    ]
+                )
+                self._cache.run(["git", "--git-dir", str(self._cache.path), "update-ref", "-d", review_ref])
+            agent_path = self._workspace / ".opencode" / "agents" / "review.md"
             agent_path.parent.mkdir(parents=True, exist_ok=True)
             agent_path.write_text(REVIEW_AGENT, encoding="utf-8")
-            return str(workspace)
-        except Exception:
+            return str(self._workspace)
+        except RepositoryCacheError:
             self.close()
             raise
-
-    def _run(self, command: list[str], environment: dict[str, str]) -> None:
-        try:
-            subprocess.run(  # noqa: S603 - command is a fixed git argv list, never shell-evaluated
-                command, env=environment, check=True, capture_output=True, text=True, timeout=120
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except Exception as exc:
+            self.close()
             raise WorkspaceError("Could not prepare review workspace") from exc
 
     def close(self) -> None:
-        """Delete the temporary credential helper and repository."""
-        if self._askpass:
-            self._askpass.unlink(missing_ok=True)
-            self._askpass = None
+        """Remove the disposable worktree while retaining the bare cache."""
+        if self._workspace and self._workspace.exists():
+            try:
+                with self._cache.locked():
+                    self._cache.run(
+                        [
+                            "git",
+                            "--git-dir",
+                            str(self._cache.path),
+                            "worktree",
+                            "remove",
+                            "--force",
+                            str(self._workspace),
+                        ]
+                    )
+                    self._cache.run(["git", "--git-dir", str(self._cache.path), "worktree", "prune"])
+            except RepositoryCacheError:
+                pass
+            self._workspace = None
         if self._temporary:
             self._temporary.cleanup()
             self._temporary = None

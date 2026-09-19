@@ -1,10 +1,16 @@
+import shutil
+import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from celery.exceptions import Retry
 from cryptography.fernet import Fernet
 
+from apps.credentials.models import GitSourceCredential
+from apps.credentials.services import CredentialEncryption
 from apps.projects.models import MergeRequest, MRChange, Project
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.opencode_output import collect_assistant_text
@@ -12,8 +18,29 @@ from apps.reviews.parsers import ReviewParseError, parse_review_response
 from apps.reviews.pipeline import BudgetExceededError, ReviewPipeline
 from apps.reviews.providers.base import ReviewRequest
 from apps.reviews.providers.opencode import OpenCodeProvider
-from apps.reviews.services import ReviewActionService, ReviewAlreadyRunningError, ReviewQueueService
+from apps.reviews.repository_cache import (
+    RepositoryCache,
+    RepositoryCacheConfigurationError,
+    RepositoryCacheMissingError,
+)
+from apps.reviews.services import (
+    ReviewActionService,
+    ReviewAlreadyRunningError,
+    ReviewConfigurationError,
+    ReviewQueueService,
+)
+from apps.reviews.tasks import _raise_or_retry_missing_cache
+from apps.reviews.workspaces import ReviewWorkspace
 from apps.sources.models import GitSource
+
+
+def run_git(cwd: Path, *arguments: str) -> None:
+    """Run trusted Git setup commands for integration fixtures."""
+    executable = shutil.which("git")
+    assert executable is not None
+    subprocess.run(  # noqa: S603 - test arguments are static
+        [executable, *arguments], cwd=cwd, check=True, capture_output=True
+    )
 
 
 @pytest.fixture
@@ -107,6 +134,83 @@ def test_manual_review_queue_rejects_active_duplicate(merge_request: MergeReques
     Review.objects.create(merge_request=merge_request, provider=provider, status=Review.PROCESSING)
     with pytest.raises(ReviewAlreadyRunningError):
         ReviewQueueService.queue_manual_review(merge_request)
+
+
+def test_manual_review_queue_rejects_missing_repository_cache(
+    merge_request: MergeRequest, settings: Any, tmp_path: Path
+) -> None:
+    """Manual reviews return an actionable error before queueing without a cache."""
+    settings.REPOSITORY_CACHE_ROOT = str(tmp_path / "cache")
+    merge_request.project.clone_url = "https://github.com/org/api.git"
+    merge_request.project.save(update_fields=["clone_url", "updated_at"])
+    AIProvider.objects.create(
+        name="default", provider_type=AIProvider.OPENCODE, model_name="opencode/mock", is_default=True
+    )
+
+    with pytest.raises(ReviewConfigurationError, match="Clone it from the Projects page"):
+        ReviewQueueService.queue_manual_review(merge_request)
+
+
+def test_review_workspace_uses_persistent_cache(project: Project, settings: Any, tmp_path: Path) -> None:
+    """A cached repository creates and removes a worktree without recloning."""
+    settings.REPOSITORY_CACHE_ROOT = str(tmp_path / "cache")
+    settings.CREDENTIAL_ENCRYPTION_KEY = Fernet.generate_key().decode()
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    run_git(origin, "init", "-b", "main")
+    run_git(origin, "config", "user.email", "review@example.com")
+    run_git(origin, "config", "user.name", "Review Test")
+    (origin / "app.py").write_text("main\n", encoding="utf-8")
+    run_git(origin, "add", "app.py")
+    run_git(origin, "commit", "-m", "main")
+    run_git(origin, "checkout", "-b", "fix")
+    (origin / "app.py").write_text("fix\n", encoding="utf-8")
+    run_git(origin, "commit", "-am", "fix")
+
+    project.clone_url = origin.as_uri()
+    project.save(update_fields=["clone_url", "updated_at"])
+    GitSourceCredential.objects.create(
+        source=project.source,
+        access_token_encrypted=CredentialEncryption().encrypt("test-token"),
+    )
+    cache = RepositoryCache(project)
+    cache.clone()
+
+    assert cache.exists()
+    with ReviewWorkspace(project, "fix") as workspace:
+        workspace_path = Path(workspace)
+        assert (workspace_path / "app.py").read_text(encoding="utf-8") == "fix\n"
+        assert workspace_path.is_dir()
+    assert not workspace_path.exists()
+    assert cache.exists()
+
+    project.clone_url = (tmp_path / "different-origin").as_uri()
+    assert not cache.exists()
+
+
+def test_repository_cache_rejects_credentials_in_clone_url(
+    project: Project, settings: Any, tmp_path: Path
+) -> None:
+    """Embedded URL credentials are never persisted in bare repository configuration."""
+    settings.REPOSITORY_CACHE_ROOT = str(tmp_path / "cache")
+    project.clone_url = "https://secret@example.com/org/api.git"
+
+    with pytest.raises(RepositoryCacheConfigurationError, match="must not contain credentials"):
+        RepositoryCache(project).clone()
+
+
+def test_missing_cache_retries_while_clone_is_running(project: Project) -> None:
+    """An automatic review waits for an explicitly queued clone instead of failing permanently."""
+    project.cache_status = Project.CACHE_CLONING
+    project.save(update_fields=["cache_status", "updated_at"])
+    task = Mock()
+    task.retry.side_effect = Retry()
+    error = RepositoryCacheMissingError("Repository cache is missing")
+
+    with pytest.raises(Retry):
+        _raise_or_retry_missing_cache(task, project, error)
+
+    task.retry.assert_called_once_with(exc=error, countdown=30)
 
 
 def test_pipeline_persists_structured_review(

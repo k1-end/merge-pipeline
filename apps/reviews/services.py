@@ -6,6 +6,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.reviews.models import AIProvider, Review
+from apps.reviews.repository_cache import RepositoryCache, RepositoryCacheMissingError
 from apps.sources.factory import get_adaptor
 
 
@@ -36,6 +37,11 @@ class ReviewQueueService:
             status__in=(Review.PENDING, Review.PROCESSING),
         ).exists():
             raise ReviewAlreadyRunningError("A review is already running for this merge request.")
+        if provider.provider_type == AIProvider.OPENCODE:
+            try:
+                RepositoryCache(project).ensure_exists()
+            except RepositoryCacheMissingError as exc:
+                raise ReviewConfigurationError(str(exc)) from exc
         from apps.reviews.tasks import run_manual_ai_review
 
         return run_manual_ai_review.delay(merge_request.pk).id

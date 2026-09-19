@@ -9,12 +9,26 @@ from apps.projects.models import MergeRequest, MRChange, Project
 class ProjectAdmin(admin.ModelAdmin):
     """Admin configuration for monitored repositories."""
 
-    list_display = ("full_name", "source", "is_active", "auto_review_enabled", "last_synced_at")
-    list_filter = ("source", "source__source_type", "is_active", "auto_review_enabled")
+    list_display = (
+        "full_name",
+        "source",
+        "is_active",
+        "auto_review_enabled",
+        "cache_status",
+        "last_synced_at",
+    )
+    list_filter = ("source", "source__source_type", "is_active", "auto_review_enabled", "cache_status")
     search_fields = ("name", "full_name", "clone_url")
-    readonly_fields = ("created_at", "updated_at", "last_synced_at")
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "last_synced_at",
+        "cache_status",
+        "cache_error",
+        "cache_updated_at",
+    )
     raw_id_fields = ("source", "ai_provider")
-    actions = ("enable_auto_review", "disable_auto_review", "trigger_sync")
+    actions = ("enable_auto_review", "disable_auto_review", "trigger_sync", "trigger_cache_clone")
 
     @admin.action(description="Enable auto-review")
     def enable_auto_review(self, request: Any, queryset: Any) -> None:
@@ -33,6 +47,22 @@ class ProjectAdmin(admin.ModelAdmin):
 
         for project_id in queryset.values_list("id", flat=True):
             sync_project.delay(project_id)
+
+    @admin.action(description="Clone repository cache")
+    def trigger_cache_clone(self, request: Any, queryset: Any) -> None:
+        """Queue persistent repository cloning for selected projects."""
+        from apps.reviews.tasks import clone_repository_cache
+
+        for project in queryset:
+            project.cache_status = Project.CACHE_CLONING
+            project.cache_error = ""
+            project.save(update_fields=["cache_status", "cache_error", "updated_at"])
+            try:
+                clone_repository_cache.delay(project.pk)
+            except Exception as exc:  # noqa: BLE001 - show broker failures in project state
+                project.cache_status = Project.CACHE_ERROR
+                project.cache_error = str(exc)
+                project.save(update_fields=["cache_status", "cache_error", "updated_at"])
 
 
 @admin.register(MergeRequest)

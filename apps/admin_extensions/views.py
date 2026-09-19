@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from apps.admin_extensions.forms import ProviderForm, SourceForm
 from apps.projects.models import MergeRequest, Project
 from apps.reviews.models import AIProvider, Review, ReviewComment
+from apps.reviews.repository_cache import RepositoryCache
 from apps.reviews.services import ReviewAlreadyRunningError, ReviewConfigurationError, ReviewQueueService
 from apps.sources.models import GitSource
 
@@ -65,8 +66,9 @@ def run_merge_request_review(request: HttpRequest, pk: int) -> HttpResponse:
 def merge_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
     """Render the operational detail view for one merge request."""
     merge_request = get_object_or_404(
-        MergeRequest.objects.select_related("project", "project__source", "project__ai_provider")
-        .prefetch_related(
+        MergeRequest.objects.select_related(
+            "project", "project__source", "project__ai_provider"
+        ).prefetch_related(
             "changes",
             Prefetch(
                 "reviews",
@@ -94,7 +96,43 @@ def merge_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
 def projects(request: HttpRequest) -> HttpResponse:
     """Render monitored repositories in the panel."""
     project_list = Project.objects.select_related("source", "ai_provider").order_by("full_name")
+    for project in project_list:
+        project.cache_available = RepositoryCache(project).exists()  # type: ignore[attr-defined]
     return render(request, "admin_extensions/projects.html", {"projects": project_list})
+
+
+@staff_member_required(login_url="admin:login")
+def clone_project_cache(request: HttpRequest, pk: int) -> HttpResponse:
+    """Queue creation of a project's persistent bare repository cache."""
+    if request.method != "POST":
+        return HttpResponse(status=405)
+    project = get_object_or_404(Project.objects.select_related("source"), pk=pk)
+    cache = RepositoryCache(project)
+    if cache.exists():
+        project.cache_status = Project.CACHE_READY
+        project.cache_error = ""
+        project.save(update_fields=["cache_status", "cache_error", "updated_at"])
+        messages.info(request, f"Repository cache for {project.full_name} already exists.")
+        return redirect("admin_extensions:projects")
+    if project.cache_status == Project.CACHE_CLONING:
+        messages.warning(request, f"Repository cache for {project.full_name} is already being cloned.")
+        return redirect("admin_extensions:projects")
+
+    from apps.reviews.tasks import clone_repository_cache
+
+    project.cache_status = Project.CACHE_CLONING
+    project.cache_error = ""
+    project.save(update_fields=["cache_status", "cache_error", "updated_at"])
+    try:
+        clone_repository_cache.delay(project.pk)
+    except Exception as exc:  # noqa: BLE001 - broker errors must be visible to the operator
+        project.cache_status = Project.CACHE_ERROR
+        project.cache_error = str(exc)
+        project.save(update_fields=["cache_status", "cache_error", "updated_at"])
+        messages.error(request, "Repository cache could not be queued.")
+    else:
+        messages.success(request, f"Repository cache queued for {project.full_name}.")
+    return redirect("admin_extensions:projects")
 
 
 @staff_member_required(login_url="admin:login")

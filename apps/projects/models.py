@@ -8,6 +8,17 @@ from apps.core.models import TimestampedModel
 class Project(TimestampedModel):
     """A repository monitored from exactly one remote source."""
 
+    CACHE_MISSING = "missing"
+    CACHE_CLONING = "cloning"
+    CACHE_READY = "ready"
+    CACHE_ERROR = "error"
+    CACHE_STATUS_CHOICES = (
+        (CACHE_MISSING, "Missing"),
+        (CACHE_CLONING, "Cloning"),
+        (CACHE_READY, "Ready"),
+        (CACHE_ERROR, "Error"),
+    )
+
     source = models.ForeignKey("sources.GitSource", on_delete=models.CASCADE, related_name="projects")
     external_id = models.CharField(max_length=100)
     name = models.CharField(max_length=255)
@@ -21,6 +32,9 @@ class Project(TimestampedModel):
     ai_provider = models.ForeignKey(
         "reviews.AIProvider", on_delete=models.SET_NULL, null=True, blank=True, related_name="projects"
     )
+    cache_status = models.CharField(max_length=20, choices=CACHE_STATUS_CHOICES, default=CACHE_MISSING)
+    cache_error = models.TextField(blank=True)
+    cache_updated_at = models.DateTimeField(null=True, blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

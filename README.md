@@ -73,7 +73,7 @@ apps/admin_extensions/  custom admin
 ## OpenCode Reviews
 
 OpenCode reviews run in the Celery worker as a read-only agent against a disposable
-checkout of the merge request source branch. The worker image must contain `git`
+Git worktree of the merge request source branch. The worker image must contain `git`
 and the OpenCode CLI. Configure the worker's OpenCode credentials in its dedicated
 `~/.local/share/opencode` data directory; do not mount a developer's home directory
 into the worker. `OPENCODE_CONFIG_DIR` is optional and controls extra configuration.
@@ -83,6 +83,12 @@ Agent` and a model in `provider/model` format, for example
 `opencode/deepseek-v4.1-flash`. The selected project must have a clone URL and a
 configured Git source credential. Enable `auto_review_enabled` only after testing
 the generated reviews manually.
+
+Before the first review, open **Projects** and click **Clone cache** for the repository.
+The clone runs asynchronously in the Celery worker and is stored as a bare repository
+in a Docker-managed named volume. Repository caches are never bind-mounted into the
+host checkout. Reviews refuse to run when the cache is missing; they fetch the requested
+branch into the cache, create a temporary worktree, and remove that worktree afterward.
 
 The bundled `.opencode/agents/review.md` agent denies edits, shell commands, web
 access, and subagents. Review output is expected to be JSON and is validated by the
