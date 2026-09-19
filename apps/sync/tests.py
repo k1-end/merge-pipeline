@@ -148,3 +148,47 @@ def test_reconcile_active_merge_requests_closes_stale_local_request(
     mr.refresh_from_db()
     assert result == {"checked": 1, "updated": 1, "unchanged": 0, "failed": 0}
     assert mr.state == MergeRequest.CLOSED
+
+
+def test_sync_project_reconciles_stale_active_merge_requests(
+    source: GitSource, monkeypatch: Any
+) -> None:
+    """A regular sync marks a request merged when it was merged remotely."""
+    project = Project.objects.create(
+        source=source,
+        external_id="1",
+        name="api",
+        full_name="org/api",
+        web_url="https://github.com/org/api",
+    )
+    mr = MergeRequest.objects.create(
+        project=project,
+        external_id="external-147",
+        external_iid="147",
+        title="Closed PR",
+        state=MergeRequest.OPENED,
+        author_username="user",
+        source_branch="feature",
+        target_branch="main",
+        web_url="https://github.com/org/api/pull/147",
+        opened_at="2026-01-01T00:00:00Z",
+        external_updated_at="2026-01-01T00:00:00Z",
+    )
+    adaptor = Mock(
+        fetch_merge_requests=Mock(return_value=[]),
+        fetch_open_merge_request_iids=Mock(return_value=set()),
+        fetch_merge_request=Mock(
+            return_value={
+                "state": MergeRequest.MERGED,
+                "external_updated_at": "2026-01-02T00:00:00Z",
+                "merged_at": "2026-01-02T00:00:00Z",
+                "closed_at": None,
+            }
+        ),
+    )
+    monkeypatch.setattr("apps.sync.services.get_adaptor", lambda source: adaptor)
+
+    SyncService().sync_project(project)
+
+    mr.refresh_from_db()
+    assert mr.state == MergeRequest.MERGED

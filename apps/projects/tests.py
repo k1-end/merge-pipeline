@@ -60,6 +60,7 @@ def test_sync_project_is_idempotent(project: Project, monkeypatch: Any) -> None:
         "opened_at": now, "external_updated_at": now, "merged_at": None, "closed_at": None,
     }]
     adaptor.fetch_mr_changes.return_value = [{"file_path": "app.py", "old_path": "", "change_type": "modified", "diff": "@@"}]
+    adaptor.fetch_open_merge_request_iids.return_value = {"7"}
     monkeypatch.setattr("apps.sync.services.get_adaptor", lambda source: adaptor)
 
     first = SyncService().sync_project(project)

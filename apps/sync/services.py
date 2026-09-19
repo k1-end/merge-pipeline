@@ -62,6 +62,7 @@ class SyncService:
                     if created or (existing and self._merge_request_content_changed(existing, item)):
                         self._sync_changes(adaptor, project, mr)
                 counts["new_mrs" if created else "updated_mrs"] += 1
+            self.reconcile_active_merge_requests(project)
             project.last_synced_at = timezone.now()
             project.save(update_fields=["last_synced_at", "updated_at"])
             log.status = SyncLog.COMPLETED if not counts["errors"] else SyncLog.PARTIAL
