@@ -33,6 +33,33 @@ class DashboardAccessTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Review operations")
         self.assertContains(response, "Active projects")
+        self.assertContains(response, "Sync merge requests")
+
+    def test_dashboard_can_queue_merge_request_sync(self) -> None:
+        """The dashboard exposes a staff-only POST action for source synchronization."""
+        user = get_user_model().objects.create_user(username="sync-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+
+        with patch("apps.sync.tasks.sync_all_projects.delay") as sync_delay:
+            response = self.client.post(reverse("admin_extensions:sync_merge_requests"))
+
+        self.assertRedirects(response, reverse("admin_extensions:dashboard"))
+        sync_delay.assert_called_once_with()
+        messages = list(response.wsgi_request._messages)
+        self.assertTrue(any("Merge-request sync queued" in str(message) for message in messages))
+
+    def test_dashboard_sync_endpoint_rejects_get(self) -> None:
+        """Synchronization is never triggered by a GET request."""
+        user = get_user_model().objects.create_user(username="sync-reader", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("admin_extensions:sync_merge_requests"))
+
+        self.assertEqual(response.status_code, 405)
 
     def test_panel_pages_are_available_to_staff_users(self) -> None:
         user = get_user_model().objects.create_user(username="operator", password="test-password")

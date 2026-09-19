@@ -44,6 +44,23 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 
 
 @staff_member_required(login_url="admin:login")
+def sync_merge_requests(request: HttpRequest) -> HttpResponse:
+    """Queue synchronization for all active, sync-enabled projects."""
+    if request.method != "POST":
+        return HttpResponse(status=405)
+
+    from apps.sync.tasks import sync_all_projects
+
+    try:
+        sync_all_projects.delay()
+    except Exception:  # noqa: BLE001 - broker errors must be visible to the operator
+        messages.error(request, "Merge-request sync could not be queued.")
+    else:
+        messages.success(request, "Merge-request sync queued for active projects.")
+    return redirect("admin_extensions:dashboard")
+
+
+@staff_member_required(login_url="admin:login")
 def run_merge_request_review(request: HttpRequest, pk: int) -> HttpResponse:
     """Queue a manual AI review for one merge request from the dashboard."""
     if request.method != "POST":
