@@ -3,11 +3,13 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+import requests
 from cryptography.fernet import Fernet
 
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
-from apps.sources.exceptions import AdaptorError
+from apps.sources.client import SourceClient
+from apps.sources.exceptions import AdaptorConfigurationError, AdaptorError
 from apps.sources.factory import get_adaptor
 from apps.sources.github.adaptor import GitHubAdaptor
 from apps.sources.gitlab.adaptor import GitLabAdaptor
@@ -99,3 +101,34 @@ def test_github_fetch_merge_requests_paginates(source: GitSource, credential: Gi
 
     assert len(result) == 101
     assert adaptor.client.get_json.call_args_list[1].kwargs["params"]["page"] == 2
+
+
+def test_github_fetch_merge_requests_rejects_noncanonical_repository() -> None:
+    """GitHub API paths require a namespace-qualified repository name."""
+    adaptor = GitHubAdaptor.__new__(GitHubAdaptor)
+    adaptor.client = Mock()
+
+    with pytest.raises(AdaptorConfigurationError, match="owner/repository"):
+        adaptor.fetch_merge_requests(SimpleNamespace(full_name="k1.nvim"))
+
+    adaptor.client.get_json.assert_not_called()
+
+
+def test_source_client_does_not_treat_http_404_as_transient(
+    settings: Any,
+) -> None:
+    """Provider 4xx responses are configuration failures, not retryable outages."""
+    settings.CREDENTIAL_ENCRYPTION_KEY = Fernet.generate_key().decode()
+    response = requests.Response()
+    response.status_code = 404
+    response.url = "https://api.github.com/repos/missing/repo/pulls"
+    client = SourceClient(
+        "https://api.github.com",
+        CredentialEncryption().encrypt("token"),
+    )
+    client.session.get = Mock(
+        side_effect=requests.HTTPError(response=response)
+    )
+
+    with pytest.raises(AdaptorConfigurationError, match="HTTP 404"):
+        client.get("repos/missing/repo/pulls")

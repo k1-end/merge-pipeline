@@ -6,6 +6,7 @@ from typing import Any
 
 from apps.sources.base import BaseGitAdaptor
 from apps.sources.client import SourceClient
+from apps.sources.exceptions import AdaptorConfigurationError
 from apps.sources.normalization import provider_datetime
 
 
@@ -37,6 +38,10 @@ class GitHubAdaptor(BaseGitAdaptor):
 
     def fetch_merge_requests(self, project: Any, updated_after: Any = None) -> list[dict]:
         """Fetch open GitHub pull requests for a repository."""
+        if project.full_name.count("/") != 1 or any(part == "" for part in project.full_name.split("/")):
+            raise AdaptorConfigurationError(
+                "GitHub project full_name must use the owner/repository format"
+            )
         results = []
         page = 1
         while True:

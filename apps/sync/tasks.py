@@ -7,6 +7,8 @@ from celery import shared_task
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.sources.exceptions import AdaptorConfigurationError
+
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def sync_project(self: Any, project_id: int) -> Any:
@@ -17,6 +19,8 @@ def sync_project(self: Any, project_id: int) -> Any:
     project = Project.objects.select_related("source", "source__credential").get(id=project_id)
     try:
         return SyncService().sync_project(project)
+    except AdaptorConfigurationError:
+        raise
     except Exception as exc:  # noqa: BLE001 - Celery owns retry policy
         raise self.retry(exc=exc) from exc
 

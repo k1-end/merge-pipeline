@@ -3,7 +3,7 @@
 import requests
 
 from apps.credentials.services import CredentialEncryption
-from apps.sources.exceptions import AdaptorConnectionError
+from apps.sources.exceptions import AdaptorConfigurationError, AdaptorConnectionError
 
 
 class SourceClient:
@@ -26,6 +26,13 @@ class SourceClient:
             )
             response.raise_for_status()
             return response
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code is not None and 400 <= status_code < 500:
+                raise AdaptorConfigurationError(
+                    f"Remote source rejected request with HTTP {status_code}"
+                ) from exc
+            raise AdaptorConnectionError("Remote source connection failed") from exc
         except requests.RequestException as exc:
             raise AdaptorConnectionError("Remote source connection failed") from exc
 
@@ -45,5 +52,12 @@ class SourceClient:
             )
             response.raise_for_status()
             return response.json() if response.content else {}
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code is not None and 400 <= status_code < 500:
+                raise AdaptorConfigurationError(
+                    f"Remote source rejected request with HTTP {status_code}"
+                ) from exc
+            raise AdaptorConnectionError("Remote source request failed") from exc
         except (requests.RequestException, ValueError) as exc:
             raise AdaptorConnectionError("Remote source request failed") from exc

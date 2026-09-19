@@ -9,8 +9,10 @@ from cryptography.fernet import Fernet
 
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
+from apps.sources.exceptions import AdaptorConfigurationError
 from apps.sources.models import GitSource
 from apps.sync.models import WebhookEvent
+from apps.sync.tasks import sync_project
 
 
 @pytest.fixture
@@ -52,3 +54,19 @@ def test_github_webhook_persists_and_queues_signed_event(client: Any, source: Gi
     assert response.status_code == 202
     assert WebhookEvent.objects.get().event_type == "pull_request"
     task.delay.assert_called_once()
+
+
+def test_sync_project_does_not_retry_configuration_errors(monkeypatch: Any) -> None:
+    """Invalid provider metadata should fail without consuming retry attempts."""
+    project = Mock()
+    project.objects = Mock()
+    monkeypatch.setattr("apps.projects.models.Project.objects", project.objects)
+    project.objects.select_related.return_value.get.return_value = object()
+
+    monkeypatch.setattr(
+        "apps.sync.services.SyncService.sync_project",
+        Mock(side_effect=AdaptorConfigurationError("invalid repository")),
+    )
+
+    with pytest.raises(AdaptorConfigurationError, match="invalid repository"):
+        sync_project.apply(args=(1,), throw=True)
