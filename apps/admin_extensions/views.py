@@ -124,6 +124,12 @@ def clone_project_cache(request: HttpRequest, pk: int) -> HttpResponse:
     if request.method != "POST":
         return HttpResponse(status=405)
     project = get_object_or_404(Project.objects.select_related("source"), pk=pk)
+    if not project.clone_url:
+        project.cache_status = Project.CACHE_ERROR
+        project.cache_error = "Project has no clone URL."
+        project.save(update_fields=["cache_status", "cache_error", "updated_at"])
+        messages.error(request, f"Repository cache for {project.full_name} cannot be cloned: no clone URL.")
+        return redirect("admin_extensions:projects")
     cache = RepositoryCache(project)
     if cache.exists():
         project.cache_status = Project.CACHE_READY

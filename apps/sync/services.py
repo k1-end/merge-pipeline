@@ -27,8 +27,11 @@ class SyncService:
         """Import accessible repositories and synchronize their merge requests."""
         results: dict[str, Any] = {"projects": 0, "new_mrs": 0, "updated_mrs": 0, "errors": []}
         for item in get_adaptor(source).fetch_projects():
+            defaults = dict(item)
+            if not defaults.get("clone_url"):
+                defaults.pop("clone_url", None)
             project, _ = Project.objects.update_or_create(
-                source=source, external_id=item["external_id"], defaults=item
+                source=source, external_id=item["external_id"], defaults=defaults
             )
             results["projects"] += 1
             try:

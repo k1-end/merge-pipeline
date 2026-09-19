@@ -105,3 +105,4 @@ volumes:
   mysql_data:
   redis_data:
   repository_cache:
+    name: merge-pipeline_repository_cache

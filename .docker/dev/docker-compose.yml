@@ -115,3 +115,4 @@ volumes:
   dev_mysql_data:
   dev_redis_data:
   dev_repository_cache:
+    name: merge-pipeline-dev_repository_cache

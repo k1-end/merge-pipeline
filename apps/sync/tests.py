@@ -9,9 +9,11 @@ from cryptography.fernet import Fernet
 
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
+from apps.projects.models import Project
 from apps.sources.exceptions import AdaptorConfigurationError
 from apps.sources.models import GitSource
 from apps.sync.models import WebhookEvent
+from apps.sync.services import SyncService
 from apps.sync.tasks import sync_project
 
 
@@ -70,3 +72,35 @@ def test_sync_project_does_not_retry_configuration_errors(monkeypatch: Any) -> N
 
     with pytest.raises(AdaptorConfigurationError, match="invalid repository"):
         sync_project.apply(args=(1,), throw=True)
+
+
+def test_sync_source_does_not_clear_existing_clone_url(source: GitSource, monkeypatch: Any) -> None:
+    """A provider response without clone metadata must not invalidate an existing cache target."""
+    project = Project.objects.create(
+        source=source,
+        external_id="1",
+        name="api",
+        full_name="org/api",
+        web_url="https://github.com/org/api",
+        clone_url="https://github.com/org/api.git",
+    )
+    adaptor = Mock(
+        fetch_projects=Mock(
+            return_value=[
+                {
+                    "external_id": "1",
+                    "name": "api",
+                    "full_name": "org/api",
+                    "web_url": "https://github.com/org/api",
+                    "clone_url": "",
+                }
+            ]
+        ),
+        sync_project=Mock(return_value={"new_mrs": 0, "updated_mrs": 0}),
+    )
+    monkeypatch.setattr("apps.sync.services.get_adaptor", lambda source: adaptor)
+
+    SyncService().sync_source(source)
+
+    project.refresh_from_db()
+    assert project.clone_url == "https://github.com/org/api.git"

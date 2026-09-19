@@ -89,6 +89,8 @@ class RepositoryCache:
                     ]
                 )
                 temporary_path.replace(self.path)
+                if not self.exists():
+                    raise RepositoryCacheError("Repository cache was cloned but could not be verified.")
             finally:
                 if temporary_path.exists():
                     shutil.rmtree(temporary_path)
