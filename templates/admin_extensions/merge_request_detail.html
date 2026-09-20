@@ -17,6 +17,10 @@
       {% csrf_token %}
       <button type="submit" class="btn btn-primary" {% if merge_request.latest_review.status == 'pending' or merge_request.latest_review.status == 'processing' %}disabled{% endif %}><i class="bx bx-bot me-1"></i>Run AI review</button>
     </form>
+    <form method="post" action="{% url 'admin_extensions:post_merge_request_comments' merge_request.pk %}">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-label-primary" {% if not pending_comment_count %}disabled{% endif %}><i class="bx bx-message-square-detail me-1"></i>Post comments{% if pending_comment_count %} ({{ pending_comment_count }}){% endif %}</button>
+    </form>
     <a href="{{ merge_request.web_url }}" target="_blank" rel="noreferrer" class="btn btn-label-secondary"><i class="bx bx-link-external me-1"></i>Open source</a>
   </div>
 </div>

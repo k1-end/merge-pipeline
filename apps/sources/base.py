@@ -60,5 +60,9 @@ class BaseGitAdaptor(ABC):
         """Create a review comment and return its external identifier."""
 
     @abstractmethod
+    def find_comment_by_marker(self, project: Any, mr_iid: str, marker: str) -> str | None:
+        """Find a previously created review comment by its idempotency marker."""
+
+    @abstractmethod
     def update_mr_state(self, project: Any, mr_iid: str, action: str) -> bool:
         """Apply close, reopen, or merge to a remote merge request."""

@@ -261,7 +261,7 @@ def test_post_comments_is_idempotent(merge_request: MergeRequest, monkeypatch: A
     posted = ReviewComment.objects.create(
         review=review, file_path="old.py", comment_type="issue", content="Done", external_comment_id="100"
     )
-    adaptor = Mock(create_comment=Mock(return_value="101"))
+    adaptor = Mock(find_comment_by_marker=Mock(return_value=None), create_comment=Mock(return_value="101"))
     monkeypatch.setattr("apps.reviews.services.get_adaptor", lambda source: adaptor)
     assert ReviewActionService.post_comments(review) == 1
     pending.refresh_from_db()
@@ -269,6 +269,25 @@ def test_post_comments_is_idempotent(merge_request: MergeRequest, monkeypatch: A
     assert pending.external_comment_id == "101"
     assert posted.external_comment_id == "100"
     adaptor.create_comment.assert_called_once()
+
+
+def test_post_comments_recovers_remote_comment_created_before_local_save(
+    merge_request: MergeRequest, monkeypatch: Any
+) -> None:
+    """A retry adopts a remote comment found by its stable marker instead of duplicating it."""
+    provider = AIProvider.objects.create(name="retry-actions", provider_type="custom", model_name="mock")
+    review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED)
+    comment = ReviewComment.objects.create(
+        review=review, file_path="app.py", line_number=2, comment_type="issue", content="Fix"
+    )
+    adaptor = Mock(find_comment_by_marker=Mock(return_value="101"), create_comment=Mock())
+    monkeypatch.setattr("apps.reviews.services.get_adaptor", lambda source: adaptor)
+
+    assert ReviewActionService.post_comments(review) == 0
+
+    comment.refresh_from_db()
+    assert comment.external_comment_id == "101"
+    adaptor.create_comment.assert_not_called()
 
 
 def test_update_mr_state_updates_local_record(merge_request: MergeRequest, monkeypatch: Any) -> None:

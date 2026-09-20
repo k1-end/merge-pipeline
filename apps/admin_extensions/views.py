@@ -10,7 +10,11 @@ from apps.admin_extensions.forms import ProviderForm, SourceForm
 from apps.projects.models import MergeRequest, Project
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.repository_cache import RepositoryCache
-from apps.reviews.services import ReviewAlreadyRunningError, ReviewConfigurationError, ReviewQueueService
+from apps.reviews.services import (
+    ReviewAlreadyRunningError,
+    ReviewConfigurationError,
+    ReviewQueueService,
+)
 from apps.sources.models import GitSource
 
 
@@ -82,6 +86,33 @@ def run_merge_request_review(request: HttpRequest, pk: int) -> HttpResponse:
 
 
 @staff_member_required(login_url="admin:login")
+def post_merge_request_comments(request: HttpRequest, pk: int) -> HttpResponse:
+    """Queue publication of pending comments from the latest completed review."""
+    if request.method != "POST":
+        return HttpResponse(status=405)
+    merge_request = get_object_or_404(MergeRequest, pk=pk)
+    review = (
+        Review.objects.filter(merge_request=merge_request, status=Review.COMPLETED)
+        .prefetch_related("comments")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if review is None:
+        messages.warning(request, "There is no completed AI review to publish.")
+        return redirect("admin_extensions:merge_request_detail", pk=pk)
+    pending_count = review.comments.filter(external_comment_id="").count()
+    if not pending_count:
+        messages.info(request, "All comments from the latest AI review are already published.")
+        return redirect("admin_extensions:merge_request_detail", pk=pk)
+
+    from apps.reviews.tasks import post_review_comments
+
+    post_review_comments.delay(review.pk)
+    messages.success(request, f"Queued {pending_count} comment(s) for publication.")
+    return redirect("admin_extensions:merge_request_detail", pk=pk)
+
+
+@staff_member_required(login_url="admin:login")
 def run_all_unreviewed_merge_requests(request: HttpRequest) -> HttpResponse:
     """Queue reviews for all opened merge requests without review history."""
     if request.method != "POST":
@@ -138,6 +169,9 @@ def merge_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
         pk=pk,
     )
     merge_request.latest_review = merge_request.review_history[0] if merge_request.review_history else None
+    merge_request.latest_completed_review = next(
+        (review for review in merge_request.review_history if review.status == Review.COMPLETED), None
+    )
     changes = list(merge_request.changes.all())
     for change in changes:
         diff_lines = (change.diff or "").splitlines()
@@ -153,6 +187,11 @@ def merge_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
         "change_count": len(changes),
         "addition_count": sum(change.additions for change in changes),
         "deletion_count": sum(change.deletions for change in changes),
+        "pending_comment_count": (
+            merge_request.latest_completed_review.comments.filter(external_comment_id="").count()
+            if merge_request.latest_completed_review
+            else 0
+        ),
     }
     return render(request, "admin_extensions/merge_request_detail.html", context)
 

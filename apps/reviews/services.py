@@ -51,19 +51,34 @@ class ReviewActionService:
     """Publish review comments and perform merge request state changes."""
 
     @staticmethod
+    def _comment_marker(comment: Any) -> str:
+        """Return the stable marker used to make remote comment creation idempotent."""
+        return f"<!-- merge-pipeline: review-comment:{comment.pk} -->"
+
+    @staticmethod
     @transaction.atomic
     def post_comments(review: Review) -> int:
-        """Post only comments without an external ID."""
+        """Post pending comments without duplicating remote comments after retries."""
         review = Review.objects.select_related("merge_request__project__source").get(pk=review.pk)
         adaptor = get_adaptor(review.merge_request.project.source)
         posted = 0
         for comment in review.comments.select_for_update().filter(external_comment_id=""):
+            marker = ReviewActionService._comment_marker(comment)
+            external_id = adaptor.find_comment_by_marker(
+                review.merge_request.project,
+                review.merge_request.external_iid,
+                marker,
+            )
+            if external_id is not None:
+                comment.external_comment_id = external_id
+                comment.save(update_fields=["external_comment_id", "updated_at"])
+                continue
             external_id = adaptor.create_comment(
                 review.merge_request.project,
                 review.merge_request.external_iid,
                 comment.file_path,
                 comment.line_number,
-                comment.content,
+                f"{comment.content}\n\n{marker}",
             )
             comment.external_comment_id = external_id
             comment.save(update_fields=["external_comment_id", "updated_at"])

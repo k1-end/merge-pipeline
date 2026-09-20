@@ -132,6 +132,21 @@ class GitLabAdaptor(BaseGitAdaptor):
         )
         return str(data["id"])
 
+    def find_comment_by_marker(self, project: Any, mr_iid: str, marker: str) -> str | None:
+        """Find a GitLab merge-request note containing the marker."""
+        page = 1
+        while True:
+            notes = self.client.get_json(
+                f"projects/{project.external_id}/merge_requests/{mr_iid}/notes",
+                params={"per_page": 100, "page": page},
+            )
+            for note in notes:
+                if marker in (note.get("body") or ""):
+                    return str(note["id"])
+            if len(notes) < 100:
+                return None
+            page += 1
+
     def update_mr_state(self, project: Any, mr_iid: str, action: str) -> bool:
         """Apply a supported GitLab MR state transition."""
         state = {"close": "close", "reopen": "reopen", "merge": "merge"}.get(action)

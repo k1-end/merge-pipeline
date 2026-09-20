@@ -145,6 +145,21 @@ class GitHubAdaptor(BaseGitAdaptor):
         )
         return str(data["id"])
 
+    def find_comment_by_marker(self, project: Any, mr_iid: str, marker: str) -> str | None:
+        """Find a GitHub pull-request issue comment containing the marker."""
+        page = 1
+        while True:
+            comments = self.client.get_json(
+                f"repos/{project.full_name}/issues/{mr_iid}/comments",
+                params={"per_page": 100, "page": page},
+            )
+            for comment in comments:
+                if marker in (comment.get("body") or ""):
+                    return str(comment["id"])
+            if len(comments) < 100:
+                return None
+            page += 1
+
     def update_mr_state(self, project: Any, mr_iid: str, action: str) -> bool:
         """Apply close or reopen to GitHub; merge uses the merge endpoint."""
         if action == "merge":

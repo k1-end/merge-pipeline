@@ -114,6 +114,38 @@ def test_github_fetch_merge_requests_rejects_noncanonical_repository() -> None:
     adaptor.client.get_json.assert_not_called()
 
 
+def test_gitlab_find_comment_by_marker(source: GitSource, credential: GitSourceCredential) -> None:
+    """GitLab comment lookup scans note pages for the idempotency marker."""
+    adaptor = GitLabAdaptor(source, credential)
+    adaptor.client = Mock()
+    adaptor.client.get_json.return_value = [{"id": 42, "body": "message\n<!-- marker -->"}]
+
+    result = adaptor.find_comment_by_marker(SimpleNamespace(external_id="10"), "7", "<!-- marker -->")
+
+    assert result == "42"
+    adaptor.client.get_json.assert_called_once_with(
+        "projects/10/merge_requests/7/notes",
+        params={"per_page": 100, "page": 1},
+    )
+
+
+def test_github_find_comment_by_marker(source: GitSource, credential: GitSourceCredential) -> None:
+    """GitHub comment lookup scans issue-comment pages for the idempotency marker."""
+    source.source_type = GitSource.GITHUB
+    source.save(update_fields=["source_type"])
+    adaptor = GitHubAdaptor(source, credential)
+    adaptor.client = Mock()
+    adaptor.client.get_json.return_value = [{"id": 42, "body": "message\n<!-- marker -->"}]
+
+    result = adaptor.find_comment_by_marker(SimpleNamespace(full_name="org/repo"), "7", "<!-- marker -->")
+
+    assert result == "42"
+    adaptor.client.get_json.assert_called_once_with(
+        "repos/org/repo/issues/7/comments",
+        params={"per_page": 100, "page": 1},
+    )
+
+
 def test_github_fetch_merge_requests_normalizes_closed_and_merged_states() -> None:
     adaptor = GitHubAdaptor.__new__(GitHubAdaptor)
     item = {

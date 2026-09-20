@@ -533,6 +533,54 @@ class DashboardAccessTests(TestCase):
         response = self.client.get(reverse("admin_extensions:run_merge_request_review", args=[1]))
         self.assertEqual(response.status_code, 302)
 
+    def test_merge_request_detail_can_queue_pending_comments(self) -> None:
+        """The merge-request page queues comments from its latest completed review."""
+        user = get_user_model().objects.create_user(username="comment-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="comment-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="comment-project",
+            name="api",
+            full_name="org/api",
+            web_url="https://github.com/org/api",
+        )
+        merge_request = MergeRequest.objects.create(
+            project=project,
+            external_id="30",
+            external_iid="30",
+            title="Publish findings",
+            state=MergeRequest.OPENED,
+            author_username="dev",
+            source_branch="feature/comments",
+            target_branch="main",
+            web_url="https://github.com/org/api/pull/30",
+            opened_at=timezone.now(),
+            external_updated_at=timezone.now(),
+        )
+        provider = AIProvider.objects.create(name="Comment model", provider_type=AIProvider.OPENAI, model_name="model")
+        review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED)
+        ReviewComment.objects.create(
+            review=review, file_path="app.py", line_number=3, comment_type="issue", content="Fix this"
+        )
+
+        with patch("apps.reviews.tasks.post_review_comments.delay") as post_delay:
+            response = self.client.post(
+                reverse("admin_extensions:post_merge_request_comments", args=[merge_request.pk])
+            )
+
+        self.assertRedirects(response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]))
+        post_delay.assert_called_once_with(review.pk)
+
+    def test_merge_request_comment_endpoint_rejects_get(self) -> None:
+        """Comment publication is never triggered by a GET request."""
+        response = self.client.get(reverse("admin_extensions:post_merge_request_comments", args=[1]))
+        self.assertEqual(response.status_code, 302)
+
     def test_bulk_review_queues_only_opened_unreviewed_merge_requests(self) -> None:
         """The bulk action excludes reviewed, draft, and closed merge requests."""
         user = get_user_model().objects.create_user(username="bulk-operator", password="test-password")
