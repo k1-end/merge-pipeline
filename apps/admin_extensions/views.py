@@ -4,7 +4,7 @@ from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.paginator import Paginator
 from django.db.models import Exists, OuterRef, Prefetch
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
@@ -73,16 +73,25 @@ def run_merge_request_review(request: HttpRequest, pk: int) -> HttpResponse:
     """Queue a manual AI review for one merge request from the dashboard."""
     if request.method != "POST":
         return HttpResponse(status=405)
+    is_ajax = request.headers.get("x-requested-with") == "XMLHttpRequest"
     merge_request = get_object_or_404(
         MergeRequest.objects.select_related("project", "project__source", "project__ai_provider"), pk=pk
     )
     try:
         ReviewQueueService.queue_manual_review(merge_request)
     except ReviewAlreadyRunningError as exc:
+        if is_ajax:
+            return JsonResponse({"ok": False, "message": str(exc)}, status=409)
         messages.warning(request, str(exc))
     except ReviewConfigurationError as exc:
+        if is_ajax:
+            return JsonResponse({"ok": False, "message": str(exc)}, status=400)
         messages.error(request, str(exc))
     else:
+        if is_ajax:
+            return JsonResponse(
+                {"ok": True, "message": f"AI review queued for !{merge_request.external_iid}."}
+            )
         messages.success(request, f"AI review queued for !{merge_request.external_iid}.")
     return redirect("admin_extensions:dashboard")
 

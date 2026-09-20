@@ -259,6 +259,8 @@ class DashboardAccessTests(TestCase):
         )
         response = self.client.get(reverse("admin_extensions:merge_requests"))
         self.assertContains(response, "Run AI review")
+        self.assertContains(response, 'class="d-inline js-review-form"')
+        self.assertContains(response, 'id="review-complete-modal"')
         self.assertContains(
             response,
             reverse("admin_extensions:run_merge_request_review", args=[merge_request.pk]),
@@ -573,6 +575,20 @@ class DashboardAccessTests(TestCase):
             self.assertRedirects(response, reverse("admin_extensions:dashboard"))
             messages = list(response.wsgi_request._messages)
             self.assertTrue(any("AI review queued" in str(message) for message in messages))
+
+        with self.subTest("index AJAX action returns JSON without redirecting"):
+            with patch(
+                "apps.admin_extensions.views.ReviewQueueService.queue_manual_review", return_value="task-id"
+            ):
+                response = self.client.post(
+                    reverse("admin_extensions:run_merge_request_review", args=[merge_request.pk]),
+                    HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertJSONEqual(
+                response.content,
+                {"ok": True, "message": "AI review queued for !10."},
+            )
 
     def test_dashboard_review_endpoint_rejects_get(self) -> None:
         """Review execution is never triggered by a GET request."""
