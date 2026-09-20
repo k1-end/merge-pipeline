@@ -1,3 +1,5 @@
+from urllib.parse import urlencode
+
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.paginator import Paginator
@@ -119,6 +121,8 @@ def run_all_unreviewed_merge_requests(request: HttpRequest) -> HttpResponse:
         return HttpResponse(status=405)
 
     selected_project = request.POST.get("project", "")
+    selected_author = request.POST.get("author", "").strip()
+    selected_name = request.POST.get("name", "").strip()
     merge_requests = (
         MergeRequest.objects.filter(state=MergeRequest.OPENED)
         .annotate(has_review=Exists(Review.objects.filter(merge_request=OuterRef("pk"))))
@@ -128,6 +132,10 @@ def run_all_unreviewed_merge_requests(request: HttpRequest) -> HttpResponse:
         merge_requests = merge_requests.filter(project_id=selected_project)
     elif selected_project:
         merge_requests = merge_requests.none()
+    if selected_author:
+        merge_requests = merge_requests.filter(author_username__icontains=selected_author)
+    if selected_name:
+        merge_requests = merge_requests.filter(title__icontains=selected_name)
 
     queued = 0
     skipped = 0
@@ -145,9 +153,19 @@ def run_all_unreviewed_merge_requests(request: HttpRequest) -> HttpResponse:
     else:
         messages.success(request, f"Queued {queued} AI review(s).")
 
-    if selected_project:
-        return redirect(f"{reverse('admin_extensions:merge_requests')}?project={selected_project}")
-    return redirect("admin_extensions:merge_requests")
+    query_params = {
+        key: value
+        for key, value in (
+            ("project", selected_project),
+            ("author", selected_author),
+            ("name", selected_name),
+        )
+        if value
+    }
+    redirect_url = reverse("admin_extensions:merge_requests")
+    if query_params:
+        redirect_url += "?" + urlencode(query_params)
+    return redirect(redirect_url)
 
 
 @staff_member_required(login_url="admin:login")
@@ -249,6 +267,8 @@ def clone_project_cache(request: HttpRequest, pk: int) -> HttpResponse:
 def merge_requests(request: HttpRequest) -> HttpResponse:
     """Render imported merge requests in the panel."""
     selected_project = request.GET.get("project", "")
+    selected_author = request.GET.get("author", "").strip()
+    selected_name = request.GET.get("name", "").strip()
     merge_request_list = (
         MergeRequest.objects.select_related("project", "project__source")
         .prefetch_related(
@@ -264,6 +284,10 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
         merge_request_list = merge_request_list.filter(project_id=selected_project)
     elif selected_project:
         merge_request_list = merge_request_list.none()
+    if selected_author:
+        merge_request_list = merge_request_list.filter(author_username__icontains=selected_author)
+    if selected_name:
+        merge_request_list = merge_request_list.filter(title__icontains=selected_name)
 
     projects = Project.objects.order_by("full_name")
     merge_requests_page = Paginator(merge_request_list, 25).get_page(request.GET.get("page"))
@@ -279,6 +303,8 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
             "merge_requests_page": merge_requests_page,
             "projects": projects,
             "selected_project": selected_project,
+            "selected_author": selected_author,
+            "selected_name": selected_name,
         },
     )
 

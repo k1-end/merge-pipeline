@@ -321,6 +321,52 @@ class DashboardAccessTests(TestCase):
         self.assertNotContains(response, "public/assets/styles/base.min.css")
         self.assertContains(response, "choices.min.js")
 
+    def test_merge_request_index_filters_by_author_and_name(self) -> None:
+        """Author and title filters can be applied together."""
+        user = get_user_model().objects.create_user(username="filter-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="author-name-filter-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="author-name-filter-project",
+            name="web",
+            full_name="org/web",
+            web_url="https://github.com/org/web",
+        )
+        for external_id, title, author in (
+            ("41", "Fix checkout", "alice"),
+            ("42", "Fix checkout", "bob"),
+            ("43", "Update documentation", "alice"),
+        ):
+            MergeRequest.objects.create(
+                project=project,
+                external_id=external_id,
+                external_iid=external_id,
+                title=title,
+                state=MergeRequest.OPENED,
+                author_username=author,
+                source_branch="feature",
+                target_branch="main",
+                web_url=f"https://github.com/org/web/pull/{external_id}",
+                opened_at=timezone.now(),
+                external_updated_at=timezone.now(),
+            )
+
+        response = self.client.get(
+            reverse("admin_extensions:merge_requests"),
+            {"author": "alice", "name": "checkout"},
+        )
+
+        self.assertContains(response, "Fix checkout")
+        self.assertNotContains(response, "Update documentation")
+        self.assertNotContains(response, "!42")
+        self.assertContains(response, 'name="author" value="alice"')
+        self.assertContains(response, 'name="name" value="checkout"')
+
     def test_merge_request_index_paginates_and_preserves_project_filter(self) -> None:
         user = get_user_model().objects.create_user(username="merge-request-pages", password="test-password")
         user.is_staff = True
