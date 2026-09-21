@@ -39,9 +39,7 @@ class GitHubAdaptor(BaseGitAdaptor):
     def fetch_merge_requests(self, project: Any, updated_after: Any = None) -> list[dict]:
         """Fetch GitHub pull requests, optionally restricted to a time window."""
         if project.full_name.count("/") != 1 or any(part == "" for part in project.full_name.split("/")):
-            raise AdaptorConfigurationError(
-                "GitHub project full_name must use the owner/repository format"
-            )
+            raise AdaptorConfigurationError("GitHub project full_name must use the owner/repository format")
         results = []
         page = 1
         while True:
@@ -68,7 +66,11 @@ class GitHubAdaptor(BaseGitAdaptor):
 
     def fetch_open_merge_request_iids(self, project: Any) -> set[str]:
         """Fetch all currently open GitHub pull-request numbers."""
-        return {item["external_iid"] for item in self.fetch_merge_requests(project) if item["state"] in {"opened", "draft"}}
+        return {
+            item["external_iid"]
+            for item in self.fetch_merge_requests(project)
+            if item["state"] in {"opened", "draft"}
+        }
 
     def fetch_merge_request(self, project: Any, mr_iid: str) -> dict:
         """Fetch and normalize one GitHub pull request."""
@@ -116,15 +118,114 @@ class GitHubAdaptor(BaseGitAdaptor):
             for item in data
         ]
 
+    def _fetch_pages(self, path: str) -> list[dict]:
+        """Fetch every page from a GitHub list endpoint."""
+        results: list[dict] = []
+        page = 1
+        while True:
+            data = self.client.get_json(path, params={"per_page": 100, "page": page})
+            if not isinstance(data, list):
+                raise AdaptorConfigurationError("GitHub returned an invalid paginated response")
+            results.extend(data)
+            if len(data) < 100:
+                return results
+            page += 1
+
+    def fetch_mr_comments(self, project: Any, mr_iid: str) -> list[dict]:
+        """Fetch top-level and inline GitHub pull-request comments."""
+        comments = []
+        for item in self._fetch_pages(f"repos/{project.full_name}/issues/{mr_iid}/comments"):
+            user = item.get("user") or {}
+            comments.append(
+                {
+                    "provider_kind": "github_issue_comment",
+                    "category": "general",
+                    "external_id": str(item["id"]),
+                    "external_thread_id": "",
+                    "external_review_id": "",
+                    "parent_external_id": "",
+                    "author_username": user.get("login") or "unknown",
+                    "author_external_id": str(user.get("id") or ""),
+                    "body": item.get("body") or "",
+                    "web_url": item.get("html_url") or "",
+                    "file_path": "",
+                    "line_number": None,
+                    "start_line_number": None,
+                    "line_side": "",
+                    "commit_sha": "",
+                    "is_resolvable": False,
+                    "is_resolved": False,
+                    "provider_created_at": provider_datetime(item["created_at"]),
+                    "provider_updated_at": provider_datetime(item["updated_at"]),
+                }
+            )
+        for item in self._fetch_pages(f"repos/{project.full_name}/pulls/{mr_iid}/comments"):
+            user = item.get("user") or {}
+            comments.append(
+                {
+                    "provider_kind": "github_review_comment",
+                    "category": "inline",
+                    "external_id": str(item["id"]),
+                    "external_thread_id": str(item.get("in_reply_to_id") or item["id"]),
+                    "external_review_id": str(item.get("pull_request_review_id") or ""),
+                    "parent_external_id": str(item.get("in_reply_to_id") or ""),
+                    "author_username": user.get("login") or "unknown",
+                    "author_external_id": str(user.get("id") or ""),
+                    "body": item.get("body") or "",
+                    "web_url": item.get("html_url") or "",
+                    "file_path": item.get("path") or "",
+                    "line_number": item.get("line") or item.get("original_line"),
+                    "start_line_number": item.get("start_line") or item.get("original_start_line"),
+                    "line_side": (item.get("side") or item.get("original_side") or "").lower(),
+                    "commit_sha": item.get("commit_id") or "",
+                    "is_resolvable": False,
+                    "is_resolved": False,
+                    "provider_created_at": provider_datetime(item["created_at"]),
+                    "provider_updated_at": provider_datetime(item["updated_at"]),
+                }
+            )
+        return comments
+
+    def fetch_mr_reviews(self, project: Any, mr_iid: str) -> list[dict]:
+        """Fetch GitHub pull-request review summaries and decisions."""
+        reviews = []
+        for item in self._fetch_pages(f"repos/{project.full_name}/pulls/{mr_iid}/reviews"):
+            user = item.get("user") or {}
+            submitted_at = provider_datetime(item["submitted_at"]) if item.get("submitted_at") else None
+            reviews.append(
+                {
+                    "external_id": str(item["id"]),
+                    "author_username": user.get("login") or "unknown",
+                    "author_external_id": str(user.get("id") or ""),
+                    "body": item.get("body") or "",
+                    "state": (item.get("state") or "commented").lower(),
+                    "commit_sha": item.get("commit_id") or "",
+                    "web_url": item.get("html_url") or "",
+                    "provider_created_at": submitted_at,
+                    "provider_updated_at": submitted_at,
+                }
+            )
+        return reviews
+
     def parse_webhook(self, payload: dict, event_type: str) -> dict:
-        """Normalize a GitHub pull request webhook."""
+        """Normalize a GitHub pull request or discussion webhook."""
         pull = payload.get("pull_request", {})
+        if event_type == "issue_comment":
+            issue = payload.get("issue", {})
+            pull = issue if issue.get("pull_request") else {}
+        elif event_type == "pull_request_review":
+            pull = payload.get("pull_request", {})
+        elif event_type == "pull_request_review_comment":
+            pull = payload.get("pull_request", {})
         repo = payload.get("repository", {})
         return {
             "action": payload.get("action", "unknown"),
             "external_project_id": str(repo.get("id", "")),
             "external_iid": str(pull.get("number", "")),
             "external_updated_at": provider_datetime(pull["updated_at"]) if pull.get("updated_at") else None,
+            "sync_discussion": event_type
+            in {"issue_comment", "pull_request_review", "pull_request_review_comment"}
+            and bool(pull),
         }
 
     def verify_webhook(self, payload: bytes, signature: str | None) -> bool:

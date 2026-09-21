@@ -6,7 +6,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.credentials.models import GitSourceCredential
-from apps.projects.models import MergeRequest, MRChange, Project
+from apps.projects.models import MergeRequest, MRChange, Project, RemoteMRComment
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.services import ReviewConfigurationError
 from apps.sources.models import GitSource
@@ -457,6 +457,19 @@ class DashboardAccessTests(TestCase):
             change_type=MRChange.MODIFIED,
             diff="@@ -1,2 +1,3 @@\n context\n-old line\n+new line\n+added line\n",
         )
+        RemoteMRComment.objects.create(
+            merge_request=merge_request,
+            provider_kind=RemoteMRComment.GITHUB_REVIEW_COMMENT,
+            category=RemoteMRComment.INLINE,
+            external_id="comment-1",
+            author_username="reviewer",
+            body="Please handle this edge case.",
+            file_path="dashboard/views.py",
+            line_number=9,
+            provider_created_at=timezone.now(),
+            provider_updated_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
 
         response = self.client.get(reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]))
 
@@ -466,6 +479,8 @@ class DashboardAccessTests(TestCase):
         self.assertContains(response, "No AI review yet")
         self.assertContains(response, "Changed files")
         self.assertContains(response, "dashboard/views.py")
+        self.assertContains(response, "Source discussion")
+        self.assertContains(response, "Please handle this edge case.")
         self.assertContains(response, ">+2<")
         self.assertContains(response, ">-1<")
         self.assertContains(response, "data-diff")

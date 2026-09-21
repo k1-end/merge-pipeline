@@ -59,6 +59,36 @@
       </div>
     </div>
 
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Source discussion</h5><span class="badge bg-label-primary">{{ source_discussion|length }}</span></div>
+      <div class="card-body p-0">
+        {% for item in source_discussion %}
+        <div class="finding-row">
+          <div class="finding-marker"></div>
+          <div class="flex-grow-1">
+            <div class="d-flex flex-wrap justify-content-between gap-2">
+              <strong>{{ item.author_username }}</strong>
+              <small class="text-muted">{{ item.provider_created_at|date:"M j, Y H:i" }}</small>
+            </div>
+            {% if item.discussion_kind == 'review' %}
+              <div class="small text-muted text-uppercase mt-1">Review · {{ item.state }}</div>
+            {% else %}
+              <div class="small text-muted mt-1">
+                {% if item.category == 'inline' %}<i class="bx bx-code-alt me-1"></i>{{ item.file_path }}{% if item.line_number %}:{{ item.line_number }}{% endif %}{% else %}Conversation{% endif %}
+                {% if item.parent_external_id %} · reply{% endif %}
+                {% if item.is_resolved %} · resolved{% elif item.is_resolvable %} · unresolved{% endif %}
+              </div>
+            {% endif %}
+            {% if item.body %}<p class="mb-0 mt-2">{{ item.body }}</p>{% endif %}
+            {% if item.web_url %}<a class="small d-inline-block mt-2" href="{{ item.web_url }}" target="_blank" rel="noreferrer">Open on source</a>{% endif %}
+          </div>
+        </div>
+        {% empty %}
+        <div class="text-center text-muted py-5"><i class="bx bx-message-square-dots empty-icon"></i><p class="mb-0 mt-2">No source discussion has been synced.</p></div>
+        {% endfor %}
+      </div>
+    </div>
+
     <div class="card diff-card">
       <div class="card-header diff-header">
         <div>

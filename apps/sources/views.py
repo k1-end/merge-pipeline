@@ -33,12 +33,30 @@ class SourceWebhookView(View):
         signature = request.headers.get(self.signature_header)
         if not get_adaptor(source).verify_webhook(request.body, signature):
             return JsonResponse({"error": "Invalid signature"}, status=401)
-        event = WebhookEvent.objects.create(
-            source=source,
-            event_type=request.headers.get("X-GitHub-Event") or request.headers.get("X-Gitlab-Event") or "unknown",
-            payload=payload,
-            headers={key: value for key, value in request.headers.items() if key.lower() not in {"authorization", "cookie"}},
+        delivery_id = (
+            request.headers.get("X-GitHub-Delivery") or request.headers.get("X-Gitlab-Event-UUID") or ""
         )
+        if len(delivery_id) > 255:
+            return JsonResponse({"error": "Invalid delivery identifier"}, status=400)
+        event_values = {
+            "event_type": request.headers.get("X-GitHub-Event")
+            or request.headers.get("X-Gitlab-Event")
+            or "unknown",
+            "payload": payload,
+            "headers": {
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in {"authorization", "cookie", "x-gitlab-token", "x-hub-signature-256"}
+            },
+        }
+        if delivery_id:
+            event, created = WebhookEvent.objects.get_or_create(
+                source=source, delivery_id=delivery_id, defaults=event_values
+            )
+            if not created:
+                return JsonResponse({"status": "accepted", "event_id": event.id}, status=202)
+        else:
+            event = WebhookEvent.objects.create(source=source, delivery_id="", **event_values)
         process_webhook_event.delay(event.id)
         return JsonResponse({"status": "accepted", "event_id": event.id}, status=202)
 

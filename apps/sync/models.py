@@ -12,14 +12,21 @@ class SyncLog(TimestampedModel):
     INCREMENTAL = "incremental_sync"
     WEBHOOK = "webhook_process"
     STATE_CHANGE = "mr_state_change"
-    OPERATIONS = ((FULL, "Full Sync"), (INCREMENTAL, "Incremental Sync"), (WEBHOOK, "Webhook Processing"), (STATE_CHANGE, "MR State Change"))
+    OPERATIONS = (
+        (FULL, "Full Sync"),
+        (INCREMENTAL, "Incremental Sync"),
+        (WEBHOOK, "Webhook Processing"),
+        (STATE_CHANGE, "MR State Change"),
+    )
     STARTED = "started"
     COMPLETED = "completed"
     FAILED = "failed"
     PARTIAL = "partial"
     STATUSES = ((STARTED, "Started"), (COMPLETED, "Completed"), (FAILED, "Failed"), (PARTIAL, "Partial"))
 
-    project = models.ForeignKey("projects.Project", on_delete=models.CASCADE, related_name="sync_logs", null=True, blank=True)
+    project = models.ForeignKey(
+        "projects.Project", on_delete=models.CASCADE, related_name="sync_logs", null=True, blank=True
+    )
     source = models.ForeignKey("sources.GitSource", on_delete=models.CASCADE, related_name="sync_logs")
     operation = models.CharField(max_length=30, choices=OPERATIONS)
     status = models.CharField(max_length=20, choices=STATUSES, default=STARTED)
@@ -35,13 +42,17 @@ class SyncLog(TimestampedModel):
         """Database mapping and synchronization lookup indexes."""
 
         db_table = "sync_logs"
-        indexes = [models.Index(fields=["source", "-created_at"]), models.Index(fields=["project", "-created_at"])]
+        indexes = [
+            models.Index(fields=["source", "-created_at"]),
+            models.Index(fields=["project", "-created_at"]),
+        ]
 
 
 class WebhookEvent(TimestampedModel):
     """Persisted webhook payload awaiting asynchronous processing."""
 
     source = models.ForeignKey("sources.GitSource", on_delete=models.CASCADE, related_name="webhook_events")
+    delivery_id = models.CharField(max_length=255, blank=True)
     event_type = models.CharField(max_length=100)
     event_action = models.CharField(max_length=50, blank=True)
     payload = models.JSONField()
@@ -55,4 +66,14 @@ class WebhookEvent(TimestampedModel):
         """Database mapping and webhook processing indexes."""
 
         db_table = "webhook_events"
-        indexes = [models.Index(fields=["source", "processed", "-received_at"]), models.Index(fields=["event_type", "-received_at"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source", "delivery_id"],
+                condition=~models.Q(delivery_id=""),
+                name="uniq_webhook_source_delivery_id",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["source", "processed", "-received_at"]),
+            models.Index(fields=["event_type", "-received_at"]),
+        ]

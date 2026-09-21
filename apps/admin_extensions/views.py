@@ -9,7 +9,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from apps.admin_extensions.forms import ProviderForm, SourceForm
-from apps.projects.models import MergeRequest, Project
+from apps.projects.models import MergeRequest, Project, RemoteMRComment, RemoteMRReview
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.repository_cache import RepositoryCache
 from apps.reviews.services import (
@@ -192,6 +192,20 @@ def merge_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
                 .order_by("-created_at", "-id"),
                 to_attr="review_history",
             ),
+            Prefetch(
+                "remote_comments",
+                queryset=RemoteMRComment.objects.filter(
+                    deleted_at__isnull=True, local_review_comment__isnull=True
+                ).order_by("provider_created_at", "id"),
+                to_attr="source_comments",
+            ),
+            Prefetch(
+                "remote_reviews",
+                queryset=RemoteMRReview.objects.filter(deleted_at__isnull=True).order_by(
+                    "provider_created_at", "id"
+                ),
+                to_attr="source_reviews",
+            ),
         ),
         pk=pk,
     )
@@ -202,13 +216,30 @@ def merge_request_detail(request: HttpRequest, pk: int) -> HttpResponse:
     changes = list(merge_request.changes.all())
     for change in changes:
         diff_lines = (change.diff or "").splitlines()
-        change.additions = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
-        change.deletions = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
+        change.additions = sum(
+            1 for line in diff_lines if line.startswith("+") and not line.startswith("+++")
+        )
+        change.deletions = sum(
+            1 for line in diff_lines if line.startswith("-") and not line.startswith("---")
+        )
     all_comments = [comment for review in merge_request.review_history for comment in review.comments.all()]
+    for comment in merge_request.source_comments:
+        comment.discussion_kind = "comment"
+    for review in merge_request.source_reviews:
+        review.discussion_kind = "review"
+    source_discussion = sorted(
+        [*merge_request.source_comments, *merge_request.source_reviews],
+        key=lambda item: (
+            item.provider_created_at is None,
+            item.provider_created_at or item.created_at,
+            item.id,
+        ),
+    )
     context = {
         "merge_request": merge_request,
         "review_history": merge_request.review_history,
         "unresolved_comments": [comment for comment in all_comments if not comment.is_resolved],
+        "source_discussion": source_discussion,
         "review_count": len(merge_request.review_history),
         "changes": changes,
         "change_count": len(changes),
@@ -323,7 +354,9 @@ def reviews(request: HttpRequest) -> HttpResponse:
     """Render recent AI reviews and their current status."""
     review_list = Review.objects.select_related("merge_request", "provider").order_by("-created_at", "-id")
     reviews_page = Paginator(review_list, 25).get_page(request.GET.get("page"))
-    return render(request, "admin_extensions/reviews.html", {"reviews": reviews_page, "reviews_page": reviews_page})
+    return render(
+        request, "admin_extensions/reviews.html", {"reviews": reviews_page, "reviews_page": reviews_page}
+    )
 
 
 @staff_member_required(login_url="admin:login")

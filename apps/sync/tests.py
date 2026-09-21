@@ -58,6 +58,33 @@ def test_github_webhook_persists_and_queues_signed_event(client: Any, source: Gi
     task.delay.assert_called_once()
 
 
+def test_github_webhook_deduplicates_delivery_and_does_not_store_signature(
+    client: Any, source: GitSource, monkeypatch: Any
+) -> None:
+    """Repeated provider deliveries are accepted without duplicate processing."""
+    payload = {"action": "created"}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    signature = "sha256=" + hmac.new(b"hook-secret", body, hashlib.sha256).hexdigest()
+    task = Mock()
+    monkeypatch.setattr("apps.sources.views.process_webhook_event", task)
+    request_args = {
+        "data": body,
+        "content_type": "application/json",
+        "HTTP_X_HUB_SIGNATURE_256": signature,
+        "HTTP_X_GITHUB_EVENT": "issue_comment",
+        "HTTP_X_GITHUB_DELIVERY": "delivery-1",
+    }
+
+    first = client.post(f"/webhooks/github/{source.id}/", **request_args)
+    second = client.post(f"/webhooks/github/{source.id}/", **request_args)
+
+    event = WebhookEvent.objects.get()
+    assert first.status_code == second.status_code == 202
+    assert event.delivery_id == "delivery-1"
+    assert "X-Hub-Signature-256" not in event.headers
+    task.delay.assert_called_once_with(event.id)
+
+
 def test_sync_project_does_not_retry_configuration_errors(monkeypatch: Any) -> None:
     """Invalid provider metadata should fail without consuming retry attempts."""
     project = Mock()

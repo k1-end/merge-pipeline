@@ -1,8 +1,9 @@
 from typing import Any
 
 from django.contrib import admin
+from django.core.exceptions import ValidationError
 
-from apps.projects.models import MergeRequest, MRChange, Project
+from apps.projects.models import MergeRequest, MRChange, Project, RemoteMRComment, RemoteMRReview
 
 
 @admin.register(Project)
@@ -85,3 +86,37 @@ class MRChangeAdmin(admin.ModelAdmin):
     list_filter = ("change_type",)
     search_fields = ("file_path", "merge_request__title")
     raw_id_fields = ("merge_request",)
+
+
+@admin.register(RemoteMRComment)
+class RemoteMRCommentAdmin(admin.ModelAdmin):
+    list_display = (
+        "external_id",
+        "author_username",
+        "provider_kind",
+        "category",
+        "merge_request",
+        "provider_created_at",
+    )
+    list_filter = ("provider_kind", "category", "is_resolved")
+    search_fields = ("body", "author_username", "file_path", "merge_request__title")
+    raw_id_fields = ("merge_request", "local_review_comment")
+    readonly_fields = ("created_at", "updated_at", "last_seen_at", "deleted_at")
+
+    def save_model(self, request: Any, obj: RemoteMRComment, form: Any, change: bool) -> None:
+        """Prevent linking a remote comment to a finding from another request."""
+        if (
+            obj.local_review_comment
+            and obj.local_review_comment.review.merge_request_id != obj.merge_request_id
+        ):
+            raise ValidationError("The local review comment must belong to the same merge request.")
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(RemoteMRReview)
+class RemoteMRReviewAdmin(admin.ModelAdmin):
+    list_display = ("external_id", "author_username", "state", "merge_request", "provider_created_at")
+    list_filter = ("state",)
+    search_fields = ("body", "author_username", "merge_request__title")
+    raw_id_fields = ("merge_request",)
+    readonly_fields = ("created_at", "updated_at", "last_seen_at", "deleted_at")

@@ -30,9 +30,7 @@ class BaseGitAdaptor(ABC):
         """Return normalized repositories visible to the credential."""
 
     @abstractmethod
-    def fetch_merge_requests(
-        self, project: Any, updated_after: datetime | None = None
-    ) -> list[dict]:
+    def fetch_merge_requests(self, project: Any, updated_after: datetime | None = None) -> list[dict]:
         """Return normalized merge requests for a repository."""
 
     @abstractmethod
@@ -48,6 +46,14 @@ class BaseGitAdaptor(ABC):
         """Return normalized changed files for a merge request."""
 
     @abstractmethod
+    def fetch_mr_comments(self, project: Any, mr_iid: str) -> list[dict]:
+        """Return normalized remote comments and threaded notes."""
+
+    @abstractmethod
+    def fetch_mr_reviews(self, project: Any, mr_iid: str) -> list[dict]:
+        """Return normalized provider review summaries."""
+
+    @abstractmethod
     def parse_webhook(self, payload: dict, event_type: str) -> dict:
         """Normalize a provider webhook payload."""
 
@@ -56,7 +62,9 @@ class BaseGitAdaptor(ABC):
         """Verify a provider webhook signature."""
 
     @abstractmethod
-    def create_comment(self, project: Any, mr_iid: str, file_path: str, line: int | None, content: str) -> str:
+    def create_comment(
+        self, project: Any, mr_iid: str, file_path: str, line: int | None, content: str
+    ) -> str:
         """Create a review comment and return its external identifier."""
 
     @abstractmethod

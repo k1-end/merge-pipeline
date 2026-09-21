@@ -22,7 +22,14 @@ class WebhookProcessor:
             project = Project.objects.get(source=event.source, external_id=parsed["external_project_id"])
             if parsed.get("external_iid"):
                 mr = MergeRequest.objects.filter(project=project, external_iid=parsed["external_iid"]).first()
-                if mr is None or (
+                if parsed.get("sync_discussion"):
+                    from apps.sync.services import SyncService
+
+                    if mr is None:
+                        SyncService().sync_project(project)
+                    else:
+                        SyncService().sync_merge_request_discussion(mr)
+                elif mr is None or (
                     parsed.get("external_updated_at")
                     and parsed["external_updated_at"] > mr.external_updated_at
                 ):
@@ -33,7 +40,13 @@ class WebhookProcessor:
             event.processed = True
             event.processed_at = timezone.now()
             event.save(update_fields=["event_action", "processed", "processed_at", "updated_at"])
-            SyncLog.objects.create(source=event.source, project=project, operation=SyncLog.WEBHOOK, status=SyncLog.COMPLETED, completed_at=timezone.now())
+            SyncLog.objects.create(
+                source=event.source,
+                project=project,
+                operation=SyncLog.WEBHOOK,
+                status=SyncLog.COMPLETED,
+                completed_at=timezone.now(),
+            )
         except Exception as exc:
             event.error_message = str(exc)
             event.save(update_fields=["error_message", "updated_at"])

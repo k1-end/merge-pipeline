@@ -28,6 +28,12 @@ class SourceClient:
             return response
         except requests.HTTPError as exc:
             status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 429 or (
+                status_code == 403
+                and exc.response is not None
+                and exc.response.headers.get("X-RateLimit-Remaining") == "0"
+            ):
+                raise AdaptorConnectionError("Remote source rate limit exceeded") from exc
             if status_code is not None and 400 <= status_code < 500:
                 raise AdaptorConfigurationError(
                     f"Remote source rejected request with HTTP {status_code}"
@@ -54,6 +60,12 @@ class SourceClient:
             return response.json() if response.content else {}
         except requests.HTTPError as exc:
             status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 429 or (
+                status_code == 403
+                and exc.response is not None
+                and exc.response.headers.get("X-RateLimit-Remaining") == "0"
+            ):
+                raise AdaptorConnectionError("Remote source rate limit exceeded") from exc
             if status_code is not None and 400 <= status_code < 500:
                 raise AdaptorConfigurationError(
                     f"Remote source rejected request with HTTP {status_code}"
