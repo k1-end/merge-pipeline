@@ -93,6 +93,9 @@ def run_merge_request_review(request: HttpRequest, pk: int) -> HttpResponse:
                 {"ok": True, "message": f"AI review queued for !{merge_request.external_iid}."}
             )
         messages.success(request, f"AI review queued for !{merge_request.external_iid}.")
+    merge_request_detail_url = reverse("admin_extensions:merge_request_detail", args=[pk])
+    if request.POST.get("next") == merge_request_detail_url:
+        return redirect(merge_request_detail_url)
     return redirect("admin_extensions:dashboard")
 
 

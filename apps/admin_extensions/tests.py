@@ -605,6 +605,17 @@ class DashboardAccessTests(TestCase):
                 {"ok": True, "message": "AI review queued for !10."},
             )
 
+        with self.subTest("detail action returns to the merge request"):
+            detail_url = reverse("admin_extensions:merge_request_detail", args=[merge_request.pk])
+            with patch(
+                "apps.admin_extensions.views.ReviewQueueService.queue_manual_review", return_value="task-id"
+            ):
+                response = self.client.post(
+                    reverse("admin_extensions:run_merge_request_review", args=[merge_request.pk]),
+                    {"next": detail_url},
+                )
+            self.assertRedirects(response, detail_url)
+
     def test_dashboard_review_endpoint_rejects_get(self) -> None:
         """Review execution is never triggered by a GET request."""
         response = self.client.get(reverse("admin_extensions:run_merge_request_review", args=[1]))

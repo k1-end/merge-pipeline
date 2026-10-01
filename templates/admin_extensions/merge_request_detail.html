@@ -15,6 +15,7 @@
   <div class="d-flex gap-2">
     <form method="post" action="{% url 'admin_extensions:run_merge_request_review' merge_request.pk %}">
       {% csrf_token %}
+      <input type="hidden" name="next" value="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}">
       <button type="submit" class="btn btn-primary" {% if merge_request.latest_review.status == 'pending' or merge_request.latest_review.status == 'processing' %}disabled{% endif %}><i class="bx bx-bot me-1"></i>Run AI review</button>
     </form>
     <form method="post" action="{% url 'admin_extensions:post_merge_request_comments' merge_request.pk %}">
