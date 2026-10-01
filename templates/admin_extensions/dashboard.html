@@ -14,6 +14,33 @@
   <div class="col-sm-6 col-xl-3"><div class="card stat-card stat-card-warm"><div class="card-body"><span class="d-block mb-1">Pending reviews</span><h3 class="card-title mb-2">{{ pending_reviews }}</h3><a href="{% url 'admin_extensions:reviews' %}" class="small">View AI reviews <i class="bx bx-right-arrow-alt"></i></a></div></div></div>
   <div class="col-sm-6 col-xl-3"><div class="card stat-card stat-card-danger"><div class="card-body"><span class="d-block mb-1">Unresolved findings</span><h3 class="card-title mb-2">{{ unresolved_comments }}</h3><a href="{% url 'admin:reviews_reviewcomment_changelist' %}" class="small">Open findings <i class="bx bx-right-arrow-alt"></i></a></div></div></div>
 </div>
+<section class="card queue-card mb-4" id="queue-status-panel" data-status-url="{% url 'admin_extensions:queue_status' %}">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <div>
+      <h5 class="mb-1">Queue status</h5>
+      <p class="text-muted small mb-0">Live Celery worker and job activity.</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <span class="queue-health-dot queue-health-loading" id="queue-health-dot" aria-hidden="true"></span>
+      <span class="small fw-semibold" id="queue-health-label" role="status">Loading queue status…</span>
+    </div>
+  </div>
+  <div class="card-body border-top border-bottom py-3">
+    <div class="row g-3 queue-metrics">
+      <div class="col-6 col-lg-3"><span>Workers online</span><strong id="queue-workers">—</strong></div>
+      <div class="col-6 col-lg-3"><span>Running</span><strong id="queue-running">—</strong></div>
+      <div class="col-6 col-lg-3"><span>Waiting</span><strong id="queue-waiting">—</strong></div>
+      <div class="col-6 col-lg-3"><span>Scheduled / retrying</span><strong id="queue-scheduled">—</strong></div>
+    </div>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead><tr><th>Job</th><th>Target</th><th>State</th><th>Worker</th><th>Elapsed</th></tr></thead>
+      <tbody id="queue-jobs"><tr><td colspan="5" class="text-center text-muted py-4">Loading jobs…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card-footer bg-transparent small text-muted" id="queue-updated">Waiting for the first snapshot.</div>
+</section>
 <div class="row g-4">
   <div class="col-xl-8"><div class="card h-100"><div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Recent merge requests</h5><a href="{% url 'admin_extensions:merge_requests' %}" class="btn btn-sm btn-label-primary">View all</a></div><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Request</th><th>Project</th><th>Status</th><th>AI review</th><th>Updated</th><th></th></tr></thead><tbody>
     {% for merge_request in recent_merge_requests %}
@@ -32,4 +59,99 @@
     {% for review in recent_reviews %}<div class="activity-row"><span class="activity-dot activity-{{ review.status }}"></span><div><div class="fw-semibold">{{ review.merge_request.title|truncatechars:38 }}</div><div class="small text-muted">{{ review.get_status_display }} · {{ review.provider.name }}</div></div><span class="small text-muted ms-auto">{{ review.created_at|date:"M j" }}</span></div>{% empty %}<p class="text-muted mb-0">No reviews have run yet.</p>{% endfor %}
   </div></div></div>
 </div>
+{% endblock %}
+{% block extra_js %}
+<script>
+  (() => {
+    const panel = document.getElementById('queue-status-panel');
+    const healthDot = document.getElementById('queue-health-dot');
+    const healthLabel = document.getElementById('queue-health-label');
+    const jobsBody = document.getElementById('queue-jobs');
+    const updated = document.getElementById('queue-updated');
+    const countElements = {
+      workers: document.getElementById('queue-workers'),
+      running: document.getElementById('queue-running'),
+      waiting: document.getElementById('queue-waiting'),
+      scheduled: document.getElementById('queue-scheduled'),
+    };
+    let requestInFlight = false;
+
+    const healthText = { online: 'Queue online', degraded: 'Queue degraded', unavailable: 'Queue unavailable' };
+    const stateClasses = { running: 'bg-label-info', waiting: 'bg-label-warning', scheduled: 'bg-label-secondary' };
+
+    function elapsed(seconds) {
+      if (seconds === null || seconds === undefined) return '—';
+      if (seconds < 60) return `${seconds}s`;
+      if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+      return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+    }
+
+    function cell(text, className = '') {
+      const element = document.createElement('td');
+      element.textContent = text;
+      if (className) element.className = className;
+      return element;
+    }
+
+    function renderJobs(jobs) {
+      jobsBody.replaceChildren();
+      if (!jobs.length) {
+        const row = document.createElement('tr');
+        const empty = cell('No active, waiting, or scheduled jobs.', 'text-center text-muted py-4');
+        empty.colSpan = 5;
+        row.appendChild(empty);
+        jobsBody.appendChild(row);
+        return;
+      }
+      jobs.forEach((job) => {
+        const row = document.createElement('tr');
+        row.appendChild(cell(job.task, 'fw-semibold'));
+        row.appendChild(cell(job.target || '—'));
+        const stateCell = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = `badge ${stateClasses[job.state] || 'bg-label-secondary'}`;
+        badge.textContent = job.state;
+        stateCell.appendChild(badge);
+        row.appendChild(stateCell);
+        row.appendChild(cell(job.worker || '—', 'small text-muted'));
+        row.appendChild(cell(elapsed(job.duration_seconds), 'text-nowrap'));
+        jobsBody.appendChild(row);
+      });
+    }
+
+    function render(snapshot) {
+      Object.entries(countElements).forEach(([name, element]) => {
+        element.textContent = snapshot.counts[name];
+      });
+      healthDot.className = `queue-health-dot queue-health-${snapshot.health}`;
+      healthLabel.textContent = healthText[snapshot.health] || 'Queue status unknown';
+      renderJobs(snapshot.jobs);
+      updated.textContent = `Last updated ${new Date(snapshot.updated_at).toLocaleTimeString()}`;
+    }
+
+    function renderUnavailable() {
+      healthDot.className = 'queue-health-dot queue-health-unavailable';
+      healthLabel.textContent = 'Queue status unavailable';
+      updated.textContent = 'Could not contact the queue status endpoint. Retrying automatically.';
+    }
+
+    async function refresh() {
+      if (requestInFlight || document.hidden) return;
+      requestInFlight = true;
+      try {
+        const response = await fetch(panel.dataset.statusUrl, { headers: { Accept: 'application/json' } });
+        if (!response.ok) throw new Error(`Queue status returned ${response.status}`);
+        render(await response.json());
+      } catch (_error) {
+        renderUnavailable();
+      } finally {
+        requestInFlight = false;
+      }
+    }
+
+    refresh();
+    window.setInterval(refresh, 5000);
+    document.addEventListener('visibilitychange', refresh);
+  })();
+</script>
 {% endblock %}

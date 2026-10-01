@@ -151,6 +151,7 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 4
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+CELERY_INSPECT_TIMEOUT_SECONDS = env.float("CELERY_INSPECT_TIMEOUT_SECONDS", default=0.5)
 
 # ---------------------------------------------------------------------------
 # Credential encryption

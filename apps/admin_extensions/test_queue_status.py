@@ -13,6 +13,7 @@ from apps.sources.models import GitSource
 
 class QueueSnapshotTests(TestCase):
     def setUp(self) -> None:
+        """Create project records used to resolve safe task targets."""
         source = GitSource.objects.create(
             name="GitHub", source_type=GitSource.GITHUB, base_url="https://api.github.com"
         )
@@ -42,6 +43,7 @@ class QueueSnapshotTests(TestCase):
     def test_snapshot_reports_workers_and_safe_job_details(
         self, celery_app: MagicMock, _queue_depth: MagicMock
     ) -> None:
+        """Running and waiting tasks are summarized without exposing arguments."""
         inspector = celery_app.control.inspect.return_value
         inspector.active.return_value = {
             "celery@worker-1": [
@@ -80,6 +82,7 @@ class QueueSnapshotTests(TestCase):
     def test_snapshot_is_unavailable_when_broker_and_workers_are_offline(
         self, celery_app: MagicMock, _queue_depth: MagicMock
     ) -> None:
+        """Infrastructure outages produce an empty unavailable snapshot."""
         inspector = celery_app.control.inspect.return_value
         inspector.active.return_value = None
         inspector.reserved.return_value = None
@@ -94,11 +97,13 @@ class QueueSnapshotTests(TestCase):
 
 class QueueStatusEndpointTests(TestCase):
     def setUp(self) -> None:
+        """Create a staff user authorized to read operational data."""
         self.user = get_user_model().objects.create_user(username="operator", password="test-password")
         self.user.is_staff = True
         self.user.save(update_fields=["is_staff"])
 
     def test_anonymous_users_cannot_read_queue_status(self) -> None:
+        """Queue details remain behind the existing staff boundary."""
         response = self.client.get(reverse("admin_extensions:queue_status"))
 
         self.assertEqual(response.status_code, 302)
@@ -106,6 +111,7 @@ class QueueStatusEndpointTests(TestCase):
 
     @patch("apps.admin_extensions.views.get_queue_snapshot")
     def test_staff_users_receive_queue_snapshot(self, snapshot: MagicMock) -> None:
+        """The endpoint returns a fresh queue snapshot without browser caching."""
         snapshot.return_value = {
             "health": "online",
             "counts": {"workers": 1, "running": 0, "waiting": 0, "scheduled": 0},
@@ -121,6 +127,7 @@ class QueueStatusEndpointTests(TestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
 
     def test_dashboard_contains_live_queue_panel(self) -> None:
+        """The overview exposes the panel and its polling endpoint."""
         self.client.force_login(self.user)
 
         response = self.client.get(reverse("admin_extensions:dashboard"))
