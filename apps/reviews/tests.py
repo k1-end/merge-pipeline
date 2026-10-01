@@ -12,11 +12,11 @@ from cryptography.fernet import Fernet
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
 from apps.projects.models import MergeRequest, MRChange, Project
-from apps.reviews.models import AIProvider, Review, ReviewComment
+from apps.reviews.models import AIProvider, Review, ReviewComment, ReviewExecutionLogChunk
 from apps.reviews.opencode_output import collect_assistant_text
 from apps.reviews.parsers import ReviewParseError, parse_review_response
 from apps.reviews.pipeline import BudgetExceededError, ReviewPipeline
-from apps.reviews.providers.base import ReviewRequest
+from apps.reviews.providers.base import ProviderError, ReviewRequest
 from apps.reviews.providers.opencode import OpenCodeProvider
 from apps.reviews.repository_cache import (
     RepositoryCache,
@@ -155,6 +155,70 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
     assert f"git diff --find-renames {'a' * 40}...{'b' * 40}" in command[-1]
 
 
+def test_opencode_provider_emits_complete_untruncated_output(
+    monkeypatch: Any, settings: Any
+) -> None:
+    """OpenCode stdout and stderr are emitted in full even above the legacy limit."""
+    settings.OPENCODE_BINARY = "opencode"
+    settings.OPENCODE_AGENT = "review"
+    settings.OPENCODE_TIMEOUT_SECONDS = 30
+    settings.OPENCODE_MAX_OUTPUT_BYTES = 8
+    stdout = '{"type":"text","text":"{\\"summary\\":\\"ok\\",\\"findings\\":[]}"}\n'
+    stderr = "diagnostic-" * 1000
+    monkeypatch.setattr(
+        "apps.reviews.providers.opencode.subprocess.run",
+        Mock(return_value=Mock(returncode=0, stdout=stdout, stderr=stderr)),
+    )
+    captured: list[tuple[str, str]] = []
+    request = ReviewRequest(
+        "Fix",
+        "",
+        [],
+        "Review",
+        "Review {title}",
+        workspace_path="review-workspace",
+        log_handler=lambda stream, content: captured.append((stream, content)),
+    )
+
+    OpenCodeProvider(
+        AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
+    ).review(request)
+
+    assert (ReviewExecutionLogChunk.STDOUT, stdout) in captured
+    assert (ReviewExecutionLogChunk.STDERR, stderr) in captured
+
+
+def test_opencode_provider_emits_output_before_nonzero_exit(
+    monkeypatch: Any, settings: Any
+) -> None:
+    """Diagnostics from a failed process are retained before the provider raises."""
+    settings.OPENCODE_BINARY = "opencode"
+    settings.OPENCODE_AGENT = "review"
+    settings.OPENCODE_TIMEOUT_SECONDS = 30
+    monkeypatch.setattr(
+        "apps.reviews.providers.opencode.subprocess.run",
+        Mock(return_value=Mock(returncode=9, stdout="partial output", stderr="fatal detail")),
+    )
+    captured: list[tuple[str, str]] = []
+    request = ReviewRequest(
+        "Fix",
+        "",
+        [],
+        "Review",
+        "Review {title}",
+        workspace_path="review-workspace",
+        log_handler=lambda stream, content: captured.append((stream, content)),
+    )
+
+    with pytest.raises(ProviderError, match="exit code 9"):
+        OpenCodeProvider(
+            AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
+        ).review(request)
+
+    assert (ReviewExecutionLogChunk.STDOUT, "partial output") in captured
+    assert (ReviewExecutionLogChunk.STDERR, "fatal detail") in captured
+
+
 def test_manual_review_queue_rejects_active_duplicate(merge_request: MergeRequest) -> None:
     """A second dashboard request cannot create concurrent reviews."""
     merge_request.project.clone_url = "https://github.com/org/api.git"
@@ -275,6 +339,45 @@ def test_pipeline_persists_structured_review(
     review = ReviewPipeline().run_review(merge_request)
     assert review.status == Review.COMPLETED
     assert ReviewComment.objects.get(review=review).content == "Bad path"
+
+
+def test_pipeline_persists_all_log_chunks_for_failed_review(
+    merge_request: MergeRequest, monkeypatch: Any
+) -> None:
+    """A provider failure keeps the failed review and every emitted log chunk."""
+    AIProvider.objects.create(
+        name="failing", provider_type=AIProvider.CUSTOM, model_name="mock", is_default=True
+    )
+    first = "a" * (ReviewExecutionLogChunk.CHUNK_SIZE + 17)
+    second = "failure diagnostics"
+
+    class FailingProvider:
+        def __init__(self, config: AIProvider) -> None:
+            self.config = config
+
+        def estimate_cost(self, request: ReviewRequest) -> float:
+            return 0
+
+        def review(self, request: ReviewRequest) -> None:
+            request.write_log(ReviewExecutionLogChunk.STDOUT, first)
+            request.write_log(ReviewExecutionLogChunk.STDERR, second)
+            raise ProviderError("provider failed")
+
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        AIProvider.CUSTOM,
+        FailingProvider,
+    )
+
+    with pytest.raises(ProviderError, match="provider failed"):
+        ReviewPipeline().run_review(merge_request)
+
+    review = Review.objects.get(merge_request=merge_request)
+    assert review.status == Review.FAILED
+    chunks = list(review.execution_log_chunks.order_by("sequence"))
+    assert "".join(chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT) == first
+    assert "".join(chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDERR) == second
+    assert len([chunk for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT]) == 2
 
 
 def test_pipeline_enforces_budget(merge_request: MergeRequest) -> None:
