@@ -1,9 +1,11 @@
 """OpenCode CLI review executor."""
 
 import os
+import signal
 import subprocess
 import tempfile
 from time import monotonic
+from types import FrameType
 from typing import BinaryIO
 
 from django.conf import settings
@@ -56,6 +58,7 @@ class OpenCodeProvider(BaseAIProvider):
                     env=environment,
                     stdout=stdout_file,
                     stderr=stderr_file,
+                    start_new_session=True,
                 )
             except OSError as exc:
                 request.write_log(
@@ -63,12 +66,25 @@ class OpenCodeProvider(BaseAIProvider):
                     f"OpenCode could not be started: {type(exc).__name__}\n",
                 )
                 raise ProviderError("OpenCode execution failed to start") from exc
+            previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+            def stop_process_group(signum: int, frame: FrameType | None) -> None:
+                """Stop the complete OpenCode process tree before Celery exits."""
+                _terminate_process_group(process)
+                if callable(previous_sigterm):
+                    previous_sigterm(signum, frame)
+                raise SystemExit(128 + signum)
+
+            signal.signal(signal.SIGTERM, stop_process_group)
             try:
-                returncode = process.wait(timeout=settings.OPENCODE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                process.kill()
-                returncode = process.wait()
+                try:
+                    returncode = process.wait(timeout=settings.OPENCODE_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    _terminate_process_group(process)
+                    returncode = process.returncode
+            finally:
+                signal.signal(signal.SIGTERM, previous_sigterm)
 
             _emit_file(stdout_file, ReviewExecutionLogChunk.STDOUT, request)
             _emit_file(stderr_file, ReviewExecutionLogChunk.STDERR, request)
@@ -123,6 +139,22 @@ class OpenCodeProvider(BaseAIProvider):
             '{"summary":"string","findings":[{"file":"path","line":1,"type":"issue",'
             '"severity":"high","message":"string"}]}.'
         )
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate and reap a subprocess session without leaving AI work orphaned."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
 
 
 def _emit_file(file: BinaryIO, stream: str, request: ReviewRequest) -> None:

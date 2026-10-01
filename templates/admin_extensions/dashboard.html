@@ -14,7 +14,7 @@
   <div class="col-sm-6 col-xl-3"><div class="card stat-card stat-card-warm"><div class="card-body"><span class="d-block mb-1">Pending reviews</span><h3 class="card-title mb-2">{{ pending_reviews }}</h3><a href="{% url 'admin_extensions:reviews' %}" class="small">View AI reviews <i class="bx bx-right-arrow-alt"></i></a></div></div></div>
   <div class="col-sm-6 col-xl-3"><div class="card stat-card stat-card-danger"><div class="card-body"><span class="d-block mb-1">Unresolved findings</span><h3 class="card-title mb-2">{{ unresolved_comments }}</h3><a href="{% url 'admin:reviews_reviewcomment_changelist' %}" class="small">Open findings <i class="bx bx-right-arrow-alt"></i></a></div></div></div>
 </div>
-<section class="card queue-card mb-4" id="queue-status-panel" data-status-url="{% url 'admin_extensions:queue_status' %}">
+<section class="card queue-card mb-4" id="queue-status-panel" data-status-url="{% url 'admin_extensions:queue_status' %}" data-cancel-url-template="{% url 'admin_extensions:cancel_queue_job' 'TASK_ID' %}" data-csrf-token="{{ csrf_token }}">
   <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
     <div>
       <h5 class="mb-1">Queue status</h5>
@@ -35,8 +35,8 @@
   </div>
   <div class="table-responsive">
     <table class="table table-hover mb-0">
-      <thead><tr><th>Job</th><th>Target</th><th>State</th><th>Worker</th><th>Elapsed</th></tr></thead>
-      <tbody id="queue-jobs"><tr><td colspan="5" class="text-center text-muted py-4">Loading jobs…</td></tr></tbody>
+      <thead><tr><th>Job</th><th>Target</th><th>State</th><th>Worker</th><th>Elapsed</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+      <tbody id="queue-jobs"><tr><td colspan="6" class="text-center text-muted py-4">Loading jobs…</td></tr></tbody>
     </table>
   </div>
   <div class="card-footer bg-transparent small text-muted" id="queue-updated">Waiting for the first snapshot.</div>
@@ -48,7 +48,7 @@
       <td><a href="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}">!{{ merge_request.external_iid }} {{ merge_request.title|truncatechars:48 }}</a></td>
       <td>{{ merge_request.project.name }}</td>
       <td><span class="badge {% if merge_request.state == 'opened' %}bg-label-success{% elif merge_request.state == 'draft' %}bg-label-warning{% elif merge_request.state == 'merged' %}bg-label-primary{% else %}bg-label-secondary{% endif %}">{{ merge_request.get_state_display }}</span></td>
-      <td>{% if merge_request.latest_review %}<span class="badge {% if merge_request.latest_review.status == 'completed' %}bg-label-success{% elif merge_request.latest_review.status == 'failed' %}bg-label-danger{% elif merge_request.latest_review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ merge_request.latest_review.get_status_display }}</span>{% else %}<span class="text-muted small">No review</span>{% endif %}</td>
+      <td>{% if merge_request.latest_review %}<span class="badge {% if merge_request.latest_review.status == 'completed' %}bg-label-success{% elif merge_request.latest_review.status == 'failed' %}bg-label-danger{% elif merge_request.latest_review.status == 'cancelled' %}bg-label-secondary{% elif merge_request.latest_review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ merge_request.latest_review.get_status_display }}</span>{% else %}<span class="text-muted small">No review</span>{% endif %}</td>
       <td>{{ merge_request.external_updated_at|date:"M j, H:i" }}</td>
       <td class="text-nowrap"><form method="post" action="{% url 'admin_extensions:run_merge_request_review' merge_request.pk %}" class="d-inline">{% csrf_token %}<button type="submit" class="btn btn-sm btn-icon btn-label-primary" title="Run AI review" {% if merge_request.latest_review.status == 'pending' or merge_request.latest_review.status == 'processing' %}disabled{% endif %}><i class="bx bx-bot"></i></button></form> <a href="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}" class="btn btn-sm btn-icon btn-label-secondary" title="View merge request"><i class="bx bx-chevron-right"></i></a></td>
     </tr>
@@ -98,7 +98,7 @@
       if (!jobs.length) {
         const row = document.createElement('tr');
         const empty = cell('No active, waiting, or scheduled jobs.', 'text-center text-muted py-4');
-        empty.colSpan = 5;
+        empty.colSpan = 6;
         row.appendChild(empty);
         jobsBody.appendChild(row);
         return;
@@ -115,8 +115,48 @@
         row.appendChild(stateCell);
         row.appendChild(cell(job.worker || '—', 'small text-muted'));
         row.appendChild(cell(elapsed(job.duration_seconds), 'text-nowrap'));
+        const actionCell = document.createElement('td');
+        actionCell.className = 'text-end';
+        if (job.cancellable) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'btn btn-sm btn-icon btn-label-danger';
+          button.title = 'Cancel review';
+          button.setAttribute('aria-label', `Cancel ${job.task} for ${job.target || 'this target'}`);
+          const icon = document.createElement('i');
+          icon.className = 'bx bx-x';
+          button.appendChild(icon);
+          button.addEventListener('click', () => cancelJob(job, button));
+          actionCell.appendChild(button);
+        }
+        row.appendChild(actionCell);
         jobsBody.appendChild(row);
       });
+    }
+
+    async function cancelJob(job, button) {
+      const warning = job.state === 'running'
+        ? 'This review is currently running. Cancel it and stop its AI process?'
+        : 'Cancel this queued AI review?';
+      if (!window.confirm(warning)) return;
+      button.disabled = true;
+      const url = panel.dataset.cancelUrlTemplate.replace('TASK_ID', encodeURIComponent(job.id));
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'X-CSRFToken': panel.dataset.csrfToken,
+          },
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || `Cancellation returned ${response.status}`);
+        healthLabel.textContent = result.message;
+        await refresh();
+      } catch (error) {
+        healthLabel.textContent = error.message || 'AI review could not be cancelled.';
+        button.disabled = false;
+      }
     }
 
     function render(snapshot) {

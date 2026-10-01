@@ -7,8 +7,15 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.admin_extensions.queue_status import get_cached_queue_snapshot, get_queue_snapshot
+from apps.admin_extensions.queue_status import (
+    QueueJobNotCancellableError,
+    QueueJobNotFoundError,
+    cancel_review_job,
+    get_cached_queue_snapshot,
+    get_queue_snapshot,
+)
 from apps.projects.models import MergeRequest, Project
+from apps.reviews.models import AIProvider, Review
 from apps.sources.models import GitSource
 
 
@@ -50,6 +57,7 @@ class QueueSnapshotTests(TestCase):
         inspector.active.return_value = {
             "celery@worker-1": [
                 {
+                    "id": "review-task-id",
                     "name": "apps.reviews.tasks.run_manual_ai_review",
                     "args": [self.merge_request.pk],
                     "time_start": datetime.now(tz=UTC).timestamp() - 12,
@@ -60,6 +68,7 @@ class QueueSnapshotTests(TestCase):
         inspector.reserved.return_value = {
             "celery@worker-1": [
                 {
+                    "id": "sync-task-id",
                     "name": "apps.sync.tasks.sync_project",
                     "args": [self.project.pk],
                     "kwargs": {},
@@ -74,7 +83,10 @@ class QueueSnapshotTests(TestCase):
         self.assertEqual(snapshot["counts"], {"workers": 1, "running": 1, "waiting": 4, "scheduled": 0})
         self.assertEqual(snapshot["jobs"][0]["task"], "Manual AI review")
         self.assertEqual(snapshot["jobs"][0]["target"], "zoodex/merge-pipeline !7")
+        self.assertEqual(snapshot["jobs"][0]["id"], "review-task-id")
+        self.assertTrue(snapshot["jobs"][0]["cancellable"])
         self.assertEqual(snapshot["jobs"][1]["target"], "zoodex/merge-pipeline")
+        self.assertFalse(snapshot["jobs"][1]["cancellable"])
         self.assertNotIn("args", snapshot["jobs"][0])
         self.assertNotIn("kwargs", snapshot["jobs"][0])
         self.assertNotIn("must-not-leak", str(snapshot))
@@ -95,6 +107,94 @@ class QueueSnapshotTests(TestCase):
         self.assertEqual(snapshot["health"], "unavailable")
         self.assertEqual(snapshot["counts"], {"workers": 0, "running": 0, "waiting": 0, "scheduled": 0})
         self.assertEqual(snapshot["jobs"], [])
+
+    @patch("apps.admin_extensions.queue_status.cache.delete")
+    @patch("apps.admin_extensions.queue_status.celery_app")
+    def test_cancel_running_review_terminates_task_and_marks_review_cancelled(
+        self, celery_app: MagicMock, cache_delete: MagicMock
+    ) -> None:
+        """Running review cancellation stops work and persists its terminal state."""
+        provider = AIProvider.objects.create(
+            name="default", provider_type=AIProvider.CUSTOM, model_name="mock", is_default=True
+        )
+        review = Review.objects.create(
+            merge_request=self.merge_request,
+            provider=provider,
+            status=Review.PROCESSING,
+            celery_task_id="review-task-id",
+        )
+        inspector = celery_app.control.inspect.return_value
+        inspector.active.return_value = {
+            "celery@worker-1": [
+                {
+                    "id": "review-task-id",
+                    "name": "apps.reviews.tasks.run_manual_ai_review",
+                    "args": [self.merge_request.pk],
+                }
+            ]
+        }
+        inspector.reserved.return_value = {"celery@worker-1": []}
+        inspector.scheduled.return_value = {"celery@worker-1": []}
+
+        result = cancel_review_job("review-task-id")
+
+        self.assertEqual(result["state"], "running")
+        celery_app.control.revoke.assert_called_once_with(
+            "review-task-id", terminate=True, signal="SIGTERM", destination=["celery@worker-1"]
+        )
+        review.refresh_from_db()
+        self.assertEqual(review.status, Review.CANCELLED)
+        self.assertIsNotNone(review.completed_at)
+        cache_delete.assert_called_once()
+
+    @patch("apps.admin_extensions.queue_status.celery_app")
+    def test_cancel_waiting_review_revokes_without_termination(self, celery_app: MagicMock) -> None:
+        """Waiting reviews are revoked without killing a worker process."""
+        inspector = celery_app.control.inspect.return_value
+        inspector.active.return_value = {"celery@worker-1": []}
+        inspector.reserved.return_value = {
+            "celery@worker-1": [
+                {
+                    "id": "waiting-task-id",
+                    "name": "apps.reviews.tasks.run_ai_review",
+                    "args": [self.merge_request.pk],
+                }
+            ]
+        }
+        inspector.scheduled.return_value = {"celery@worker-1": []}
+
+        result = cancel_review_job("waiting-task-id")
+
+        self.assertEqual(result["state"], "waiting")
+        celery_app.control.revoke.assert_called_once_with(
+            "waiting-task-id", terminate=False, destination=["celery@worker-1"]
+        )
+
+    @patch("apps.admin_extensions.queue_status.celery_app")
+    def test_cancel_rejects_non_review_task(self, celery_app: MagicMock) -> None:
+        """The endpoint cannot be used to revoke unrelated Celery work."""
+        inspector = celery_app.control.inspect.return_value
+        inspector.active.return_value = {"celery@worker-1": []}
+        inspector.reserved.return_value = {
+            "celery@worker-1": [
+                {"id": "sync-task-id", "name": "apps.sync.tasks.sync_project", "args": [self.project.pk]}
+            ]
+        }
+        inspector.scheduled.return_value = {"celery@worker-1": []}
+
+        with self.assertRaises(QueueJobNotCancellableError):
+            cancel_review_job("sync-task-id")
+
+    @patch("apps.admin_extensions.queue_status.celery_app")
+    def test_cancel_rejects_unknown_task(self, celery_app: MagicMock) -> None:
+        """A stale dashboard action reports that its task already disappeared."""
+        inspector = celery_app.control.inspect.return_value
+        inspector.active.return_value = {"celery@worker-1": []}
+        inspector.reserved.return_value = {"celery@worker-1": []}
+        inspector.scheduled.return_value = {"celery@worker-1": []}
+
+        with self.assertRaises(QueueJobNotFoundError):
+            cancel_review_job("missing-task-id")
 
     @patch("apps.admin_extensions.queue_status.get_queue_snapshot")
     def test_cached_snapshot_coalesces_repeated_dashboard_polls(self, collect: MagicMock) -> None:
@@ -149,3 +249,39 @@ class QueueStatusEndpointTests(TestCase):
         self.assertContains(response, "Queue status")
         self.assertContains(response, reverse("admin_extensions:queue_status"))
         self.assertContains(response, "AbortController")
+        self.assertContains(response, "Cancel review")
+
+    @patch("apps.admin_extensions.views.cancel_review_job")
+    def test_staff_users_can_cancel_review_jobs(self, cancel: MagicMock) -> None:
+        """Staff can invoke the cancellation endpoint with a POST request."""
+        cancel.return_value = {"id": "review-task-id", "state": "running"}
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("admin_extensions:cancel_queue_job", args=["review-task-id"]),
+            HTTP_ACCEPT="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        cancel.assert_called_once_with("review-task-id")
+
+    @patch("apps.admin_extensions.views.cancel_review_job", side_effect=QueueJobNotFoundError)
+    def test_cancel_endpoint_reports_stale_jobs(self, _cancel: MagicMock) -> None:
+        """Jobs that already finished produce a conflict suitable for inline feedback."""
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse("admin_extensions:cancel_queue_job", args=["missing-task-id"]),
+            HTTP_ACCEPT="application/json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+
+    def test_cancel_endpoint_rejects_get(self) -> None:
+        """Cancellation is never exposed through an idempotent request method."""
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("admin_extensions:cancel_queue_job", args=["review-task-id"]))
+
+        self.assertEqual(response.status_code, 405)

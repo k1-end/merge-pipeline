@@ -12,7 +12,13 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 
 from apps.admin_extensions.forms import ProviderForm, SourceForm
-from apps.admin_extensions.queue_status import get_cached_queue_snapshot
+from apps.admin_extensions.queue_status import (
+    QueueControlUnavailableError,
+    QueueJobNotCancellableError,
+    QueueJobNotFoundError,
+    cancel_review_job,
+    get_cached_queue_snapshot,
+)
 from apps.projects.models import MergeRequest, Project, RemoteMRComment, RemoteMRReview
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.repository_cache import RepositoryCache
@@ -61,6 +67,22 @@ def queue_status(request: HttpRequest) -> JsonResponse:
     response = JsonResponse(get_cached_queue_snapshot())
     response["Cache-Control"] = "no-store"
     return response
+
+
+@staff_member_required(login_url="admin:login")
+def cancel_queue_job(request: HttpRequest, task_id: str) -> JsonResponse:
+    """Cancel one visible AI-review task from the operational dashboard."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "message": "POST required."}, status=405)
+    try:
+        result = cancel_review_job(task_id)
+    except QueueJobNotFoundError as exc:
+        return JsonResponse({"ok": False, "message": str(exc)}, status=409)
+    except QueueJobNotCancellableError as exc:
+        return JsonResponse({"ok": False, "message": str(exc)}, status=403)
+    except QueueControlUnavailableError as exc:
+        return JsonResponse({"ok": False, "message": str(exc)}, status=503)
+    return JsonResponse({"ok": True, "message": "AI review cancelled.", "job": result})
 
 
 @staff_member_required(login_url="admin:login")
@@ -442,9 +464,7 @@ def review_execution_log(request: HttpRequest, pk: int) -> StreamingHttpResponse
         maximum = review.execution_log_chunks.aggregate(value=Max("sequence"))["value"]
         while maximum is not None and last_sequence < maximum:
             batch = list(
-                review.execution_log_chunks.filter(
-                    sequence__gt=last_sequence, sequence__lte=maximum
-                )
+                review.execution_log_chunks.filter(sequence__gt=last_sequence, sequence__lte=maximum)
                 .order_by("sequence")
                 .values_list("sequence", "stream", "content")[:500]
             )

@@ -64,7 +64,7 @@ def run_ai_review(self: Any, mr_id: int) -> int:
     if not mr.project.auto_review_enabled or (mr.state == "draft" and not mr.project.review_on_draft):
         return 0
     try:
-        return ReviewPipeline().run_review(mr).id
+        return ReviewPipeline().run_review(mr, celery_task_id=self.request.id).id
     except RepositoryCacheMissingError as exc:
         _raise_or_retry_missing_cache(self, mr.project, exc)
     except Exception as exc:  # noqa: BLE001
@@ -79,7 +79,7 @@ def run_manual_ai_review(self: Any, mr_id: int) -> int:
 
     mr = MergeRequest.objects.select_related("project", "project__ai_provider").get(id=mr_id)
     try:
-        return ReviewPipeline().run_review(mr).id
+        return ReviewPipeline().run_review(mr, celery_task_id=self.request.id).id
     except RepositoryCacheMissingError as exc:
         _raise_or_retry_missing_cache(self, mr.project, exc)
     except Exception as exc:  # noqa: BLE001 - Celery owns retry policy

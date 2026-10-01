@@ -4,7 +4,7 @@
 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4 review-hero">
   <div>
     <a class="small text-muted text-decoration-none" href="{% url 'admin_extensions:reviews' %}"><i class="bx bx-arrow-back me-1"></i>All AI reviews</a>
-    <div class="d-flex align-items-center gap-2 mt-3 mb-2"><span class="review-eyebrow">REVIEW #{{ review.pk }}</span><span class="badge {% if review.status == 'completed' %}bg-label-success{% elif review.status == 'failed' %}bg-label-danger{% elif review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ review.get_status_display }}</span></div>
+    <div class="d-flex align-items-center gap-2 mt-3 mb-2"><span class="review-eyebrow">REVIEW #{{ review.pk }}</span><span class="badge {% if review.status == 'completed' %}bg-label-success{% elif review.status == 'failed' %}bg-label-danger{% elif review.status == 'cancelled' %}bg-label-secondary{% elif review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ review.get_status_display }}</span></div>
     <h4 class="fw-bold mb-2 detail-title">{{ review.merge_request.title }}</h4>
     <div class="small text-muted"><i class="bx bx-git-repo-forked me-1"></i>{{ review.merge_request.project.full_name }} <span class="mx-2">·</span> !{{ review.merge_request.external_iid }} <span class="mx-2">·</span> {{ review.created_at|date:"M j, Y H:i" }}</div>
   </div>

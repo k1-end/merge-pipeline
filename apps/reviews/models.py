@@ -14,7 +14,14 @@ class AIProvider(TimestampedModel):
     OLLAMA = "ollama"
     VLLM = "vllm"
     CUSTOM = "custom"
-    PROVIDER_TYPES = ((ANTHROPIC, "Anthropic (Claude)"), (OPENAI, "OpenAI"), (OPENCODE, "OpenCode Agent"), (OLLAMA, "Ollama (Local)"), (VLLM, "vLLM (Local)"), (CUSTOM, "Custom HTTP API"))
+    PROVIDER_TYPES = (
+        (ANTHROPIC, "Anthropic (Claude)"),
+        (OPENAI, "OpenAI"),
+        (OPENCODE, "OpenCode Agent"),
+        (OLLAMA, "Ollama (Local)"),
+        (VLLM, "vLLM (Local)"),
+        (CUSTOM, "Custom HTTP API"),
+    )
     name = models.CharField(max_length=100, unique=True)
     provider_type = models.CharField(max_length=20, choices=PROVIDER_TYPES)
     api_base_url = models.URLField(blank=True)
@@ -31,6 +38,7 @@ class AIProvider(TimestampedModel):
 
     class Meta:
         """Database mapping for provider configuration."""
+
         db_table = "ai_providers"
 
     def __str__(self) -> str:
@@ -45,8 +53,17 @@ class Review(TimestampedModel):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
-    STATUSES = ((PENDING, "Pending"), (PROCESSING, "Processing"), (COMPLETED, "Completed"), (FAILED, "Failed"))
-    merge_request = models.ForeignKey("projects.MergeRequest", on_delete=models.CASCADE, related_name="reviews")
+    CANCELLED = "cancelled"
+    STATUSES = (
+        (PENDING, "Pending"),
+        (PROCESSING, "Processing"),
+        (COMPLETED, "Completed"),
+        (FAILED, "Failed"),
+        (CANCELLED, "Cancelled"),
+    )
+    merge_request = models.ForeignKey(
+        "projects.MergeRequest", on_delete=models.CASCADE, related_name="reviews"
+    )
     provider = models.ForeignKey(AIProvider, on_delete=models.PROTECT, related_name="reviews")
     status = models.CharField(max_length=20, choices=STATUSES, default=PENDING)
     summary = models.TextField(blank=True)
@@ -58,6 +75,7 @@ class Review(TimestampedModel):
     duration_ms = models.PositiveIntegerField(default=0)
     error_message = models.TextField(blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    celery_task_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     source_branch = models.CharField(max_length=255, blank=True)
     target_branch = models.CharField(max_length=255, blank=True)
     base_sha = models.CharField(max_length=64, blank=True)
@@ -66,8 +84,12 @@ class Review(TimestampedModel):
 
     class Meta:
         """Database mapping and review lookup indexes."""
+
         db_table = "reviews"
-        indexes = [models.Index(fields=["merge_request", "-created_at"]), models.Index(fields=["provider", "status"])]
+        indexes = [
+            models.Index(fields=["merge_request", "-created_at"]),
+            models.Index(fields=["provider", "status"]),
+        ]
 
 
 class ReviewComment(TimestampedModel):
@@ -76,7 +98,15 @@ class ReviewComment(TimestampedModel):
     review = models.ForeignKey(Review, on_delete=models.CASCADE, related_name="comments")
     file_path = models.CharField(max_length=1000)
     line_number = models.PositiveIntegerField(null=True, blank=True)
-    comment_type = models.CharField(max_length=20, choices=(("issue", "Issue"), ("suggestion", "Suggestion"), ("praise", "Praise"), ("question", "Question")))
+    comment_type = models.CharField(
+        max_length=20,
+        choices=(
+            ("issue", "Issue"),
+            ("suggestion", "Suggestion"),
+            ("praise", "Praise"),
+            ("question", "Question"),
+        ),
+    )
     severity = models.CharField(max_length=20, blank=True)
     content = models.TextField()
     external_comment_id = models.CharField(max_length=100, blank=True)
@@ -86,6 +116,7 @@ class ReviewComment(TimestampedModel):
 
     class Meta:
         """Database mapping for review comments."""
+
         db_table = "review_comments"
         indexes = [models.Index(fields=["review"]), models.Index(fields=["external_comment_id"])]
 
@@ -112,6 +143,7 @@ class ReviewExecutionLogChunk(TimestampedModel):
 
     class Meta:
         """Keep chunks in their original write order without imposing a total size limit."""
+
         db_table = "review_execution_log_chunks"
         ordering = ["sequence"]
         constraints = [

@@ -1,9 +1,10 @@
 import shutil
+import signal
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 from celery.exceptions import Retry
@@ -18,7 +19,7 @@ from apps.reviews.opencode_output import collect_assistant_text
 from apps.reviews.parsers import ReviewParseError, parse_review_response
 from apps.reviews.pipeline import BudgetExceededError, ReviewPipeline
 from apps.reviews.providers.base import ProviderError, ReviewRequest
-from apps.reviews.providers.opencode import OpenCodeProvider
+from apps.reviews.providers.opencode import OpenCodeProvider, _terminate_process_group
 from apps.reviews.repository_cache import (
     RepositoryCache,
     RepositoryCacheConfigurationError,
@@ -155,6 +156,7 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
     )
     assert response.summary == '{"summary":"ok","findings":[]}'
     command = popen.call_args.args[0]
+    assert popen.call_args.kwargs["start_new_session"] is True
     assert command[:8] == [
         "opencode",
         "run",
@@ -168,9 +170,7 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
     assert f"git diff --find-renames {'a' * 40}...{'b' * 40}" in command[-1]
 
 
-def test_opencode_provider_emits_complete_untruncated_output(
-    monkeypatch: Any, settings: Any
-) -> None:
+def test_opencode_provider_emits_complete_untruncated_output(monkeypatch: Any, settings: Any) -> None:
     """OpenCode stdout and stderr are emitted in full even above the legacy limit."""
     settings.OPENCODE_BINARY = "opencode"
     settings.OPENCODE_AGENT = "review"
@@ -201,9 +201,7 @@ def test_opencode_provider_emits_complete_untruncated_output(
     assert (ReviewExecutionLogChunk.STDERR, stderr.encode()) in captured
 
 
-def test_opencode_provider_emits_output_before_nonzero_exit(
-    monkeypatch: Any, settings: Any
-) -> None:
+def test_opencode_provider_emits_output_before_nonzero_exit(monkeypatch: Any, settings: Any) -> None:
     """Diagnostics from a failed process are retained before the provider raises."""
     settings.OPENCODE_BINARY = "opencode"
     settings.OPENCODE_AGENT = "review"
@@ -230,6 +228,18 @@ def test_opencode_provider_emits_output_before_nonzero_exit(
 
     assert (ReviewExecutionLogChunk.STDOUT, b"partial output") in captured
     assert (ReviewExecutionLogChunk.STDERR, b"fatal detail") in captured
+
+
+def test_opencode_process_group_is_force_killed_when_it_does_not_stop(monkeypatch: Any) -> None:
+    """Cancellation cannot leave a resistant OpenCode child process running."""
+    process = Mock(pid=321)
+    process.wait.side_effect = [subprocess.TimeoutExpired("opencode", 5), 0]
+    killpg = Mock()
+    monkeypatch.setattr("apps.reviews.providers.opencode.os.killpg", killpg)
+
+    _terminate_process_group(process)
+
+    assert killpg.call_args_list == [call(321, signal.SIGTERM), call(321, signal.SIGKILL)]
 
 
 def test_manual_review_queue_rejects_active_duplicate(merge_request: MergeRequest) -> None:
@@ -353,11 +363,64 @@ def test_pipeline_persists_structured_review(
     assert review.status == Review.COMPLETED
     assert ReviewComment.objects.get(review=review).content == "Bad path"
     provider_log = b"".join(
-        review.execution_log_chunks.filter(
-            stream=ReviewExecutionLogChunk.PROVIDER
-        ).values_list("content", flat=True)
+        review.execution_log_chunks.filter(stream=ReviewExecutionLogChunk.PROVIDER).values_list(
+            "content", flat=True
+        )
     )
     assert b'"ok": true' in provider_log
+
+
+def test_pipeline_records_celery_task_id(merge_request: MergeRequest, monkeypatch: Any) -> None:
+    """A running review can be correlated with the Celery job shown in the dashboard."""
+    AIProvider.objects.create(name="mock", provider_type="custom", model_name="mock", is_default=True)
+    response = Mock(
+        summary='{"summary":"Clean","findings":[]}',
+        raw_response={},
+        input_tokens=1,
+        output_tokens=1,
+        cost_usd=0,
+        duration_ms=1,
+    )
+    fake_provider = Mock(estimate_cost=Mock(return_value=0), review=Mock(return_value=response))
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        "custom",
+        lambda config: fake_provider,
+    )
+
+    review = ReviewPipeline().run_review(merge_request, celery_task_id="review-task-id")
+
+    assert review.celery_task_id == "review-task-id"
+
+
+def test_pipeline_does_not_overwrite_cancellation(merge_request: MergeRequest, monkeypatch: Any) -> None:
+    """A cancellation racing with provider completion remains the terminal result."""
+    AIProvider.objects.create(name="mock", provider_type="custom", model_name="mock", is_default=True)
+    response = Mock(
+        summary='{"summary":"Too late","findings":[{"file":"app.py","line":1,"message":"late"}]}',
+        raw_response={},
+        input_tokens=1,
+        output_tokens=1,
+        cost_usd=0,
+        duration_ms=1,
+    )
+
+    def cancel_during_review(_request: ReviewRequest) -> Mock:
+        Review.objects.filter(celery_task_id="review-task-id").update(status=Review.CANCELLED)
+        return response
+
+    fake_provider = Mock(estimate_cost=Mock(return_value=0), review=cancel_during_review)
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        "custom",
+        lambda config: fake_provider,
+    )
+
+    review = ReviewPipeline().run_review(merge_request, celery_task_id="review-task-id")
+
+    review.refresh_from_db()
+    assert review.status == Review.CANCELLED
+    assert not ReviewComment.objects.filter(review=review).exists()
 
 
 def test_pipeline_persists_all_log_chunks_for_failed_review(
@@ -394,12 +457,14 @@ def test_pipeline_persists_all_log_chunks_for_failed_review(
     review = Review.objects.get(merge_request=merge_request)
     assert review.status == Review.FAILED
     chunks = list(review.execution_log_chunks.order_by("sequence"))
-    assert b"".join(
-        chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT
-    ) == first.encode()
-    assert b"".join(
-        chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDERR
-    ) == second.encode()
+    assert (
+        b"".join(chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT)
+        == first.encode()
+    )
+    assert (
+        b"".join(chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDERR)
+        == second.encode()
+    )
     assert len([chunk for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT]) == 2
 
 

@@ -41,7 +41,7 @@ class ReviewPipeline:
             raise ValueError("No active AI provider configured")
         return provider
 
-    def run_review(self, mr: MergeRequest) -> Review:
+    def run_review(self, mr: MergeRequest, celery_task_id: str | None = None) -> Review:
         """Execute and persist a complete review."""
         provider_config = self.select_provider(mr)
         provider = PROVIDER_MAP[provider_config.provider_type](provider_config)
@@ -56,7 +56,12 @@ class ReviewPipeline:
         )
         if provider.estimate_cost(request) > self.budget_limit:
             raise BudgetExceededError("Review exceeds configured budget")
-        review = Review.objects.create(merge_request=mr, provider=provider_config, status=Review.PROCESSING)
+        review = Review.objects.create(
+            merge_request=mr,
+            provider=provider_config,
+            status=Review.PROCESSING,
+            celery_task_id=celery_task_id,
+        )
         started = monotonic()
         log_recorder = None
         try:
@@ -92,35 +97,51 @@ class ReviewPipeline:
             review.output_tokens = response.output_tokens
             review.cost_usd = response.cost_usd
             review.duration_ms = response.duration_ms or int((monotonic() - started) * 1000)
-            review.status = Review.COMPLETED
-            review.completed_at = timezone.now()
+            completed_at = timezone.now()
             with transaction.atomic():
-                review.save()
-                ReviewComment.objects.bulk_create(
-                    [ReviewComment(review=review, **finding) for finding in findings]
+                completed = Review.objects.filter(pk=review.pk, status=Review.PROCESSING).update(
+                    summary=summary,
+                    findings=findings,
+                    raw_response=response.raw_response,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    cost_usd=response.cost_usd,
+                    duration_ms=review.duration_ms,
+                    status=Review.COMPLETED,
+                    completed_at=completed_at,
+                    source_branch=review.source_branch,
+                    target_branch=review.target_branch,
+                    base_sha=review.base_sha,
+                    head_sha=review.head_sha,
+                    merge_base_sha=review.merge_base_sha,
+                    updated_at=completed_at,
                 )
+                if completed:
+                    ReviewComment.objects.bulk_create(
+                        [ReviewComment(review=review, **finding) for finding in findings]
+                    )
+            review.refresh_from_db()
         except Exception as exc:
             if log_recorder is not None:
                 try:
                     log_recorder.write("system", f"Review failed: {type(exc).__name__}: {exc}\n")
                 except Exception:  # noqa: BLE001 - log storage must not block status persistence
-                    logger.exception("Could not persist the final review failure log", extra={"review_id": review.pk})
-            review.status = Review.FAILED
-            review.error_message = str(exc)
-            review.duration_ms = int((monotonic() - started) * 1000)
-            review.save(
-                update_fields=[
-                    "status",
-                    "error_message",
-                    "duration_ms",
-                    "source_branch",
-                    "target_branch",
-                    "base_sha",
-                    "head_sha",
-                    "merge_base_sha",
-                    "updated_at",
-                ]
+                    logger.exception(
+                        "Could not persist the final review failure log", extra={"review_id": review.pk}
+                    )
+            failed_at = timezone.now()
+            Review.objects.filter(pk=review.pk, status=Review.PROCESSING).update(
+                status=Review.FAILED,
+                error_message=str(exc),
+                duration_ms=int((monotonic() - started) * 1000),
+                source_branch=review.source_branch,
+                target_branch=review.target_branch,
+                base_sha=review.base_sha,
+                head_sha=review.head_sha,
+                merge_base_sha=review.merge_base_sha,
+                updated_at=failed_at,
             )
+            review.refresh_from_db()
             raise
         return review
 

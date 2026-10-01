@@ -20,6 +20,11 @@ WorkerTasks = dict[str, list[TaskPayload]]
 _SNAPSHOT_CACHE_KEY = "admin_extensions:queue_status:v1"
 _snapshot_lock = Lock()
 
+_REVIEW_TASK_NAMES = {
+    "apps.reviews.tasks.run_ai_review",
+    "apps.reviews.tasks.run_manual_ai_review",
+}
+
 _TASK_DETAILS: dict[str, tuple[str, str | None]] = {
     "apps.reviews.tasks.clone_repository_cache": ("Clone repository cache", "project"),
     "apps.reviews.tasks.run_ai_review": ("Automatic AI review", "merge_request"),
@@ -31,6 +36,18 @@ _TASK_DETAILS: dict[str, tuple[str, str | None]] = {
     "apps.sync.tasks.process_webhook_event": ("Process webhook", "webhook"),
     "apps.sync.tasks.cleanup_webhook_events": ("Clean up webhooks", None),
 }
+
+
+class QueueJobNotFoundError(LookupError):
+    """Raised when a queue job disappeared before cancellation."""
+
+
+class QueueJobNotCancellableError(ValueError):
+    """Raised when an operator tries to cancel a non-review task."""
+
+
+class QueueControlUnavailableError(RuntimeError):
+    """Raised when Celery control cannot inspect or revoke work."""
 
 
 def _broker_queue_depth() -> int:
@@ -113,11 +130,13 @@ def _normalize_jobs(
             task_name = str(payload.get("name", ""))
             label, target_kind = _task_label(task_name)
             job: dict[str, Any] = {
+                "id": str(payload.get("id", "")),
                 "task": label,
                 "state": state,
                 "target": "",
                 "worker": worker,
                 "duration_seconds": None,
+                "cancellable": task_name in _REVIEW_TASK_NAMES and bool(payload.get("id")),
             }
             target_id = _first_integer_argument(payload)
             if target_kind and target_id is not None:
@@ -169,9 +188,7 @@ def _enrich_targets(jobs: list[dict[str, Any]]) -> None:
             job["target"] = f"{merge_request.project.full_name} !{merge_request.external_iid}"
         elif kind == "review" and target_id in reviews:
             review = reviews[target_id]
-            job["target"] = (
-                f"{review.merge_request.project.full_name} !{review.merge_request.external_iid}"
-            )
+            job["target"] = f"{review.merge_request.project.full_name} !{review.merge_request.external_iid}"
         elif kind == "webhook" and isinstance(target_id, int):
             job["target"] = f"Webhook event #{target_id}"
 
@@ -246,3 +263,69 @@ def get_cached_queue_snapshot() -> dict[str, Any]:
         timeout = getattr(settings, "QUEUE_STATUS_CACHE_SECONDS", 3)
         cache.set(_SNAPSHOT_CACHE_KEY, snapshot, timeout=timeout)
         return snapshot
+
+
+def cancel_review_job(task_id: str) -> dict[str, str]:
+    """Revoke one currently visible AI-review task and persist cancellation state."""
+    timeout = getattr(settings, "CELERY_INSPECT_TIMEOUT_SECONDS", 0.5)
+    try:
+        inspector = celery_app.control.inspect(timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - infrastructure failures become an operator response
+        raise QueueControlUnavailableError("Queue control is unavailable.") from exc
+    if inspector is None:
+        raise QueueControlUnavailableError("Queue control is unavailable.")
+
+    inspections = (
+        ("running", "active", None),
+        ("waiting", "reserved", None),
+        ("scheduled", "scheduled", lambda item: item.get("request", {})),
+    )
+    any_inspection_succeeded = False
+    matched: tuple[str, str, TaskPayload] | None = None
+    for state, command, payload_getter in inspections:
+        responses, succeeded = _inspect(inspector, command)
+        any_inspection_succeeded = any_inspection_succeeded or succeeded
+        for worker, tasks in responses.items():
+            for raw_payload in tasks:
+                payload = payload_getter(raw_payload) if payload_getter else raw_payload
+                if isinstance(payload, dict) and str(payload.get("id", "")) == task_id:
+                    matched = (state, worker, payload)
+                    break
+            if matched is not None:
+                break
+        if matched is not None:
+            break
+
+    if matched is None:
+        if not any_inspection_succeeded:
+            raise QueueControlUnavailableError("Queue control is unavailable.")
+        raise QueueJobNotFoundError("This queue job has already finished or disappeared.")
+
+    state, worker, payload = matched
+    if payload.get("name") not in _REVIEW_TASK_NAMES:
+        raise QueueJobNotCancellableError("Only AI-review jobs can be cancelled here.")
+
+    revoke_kwargs: dict[str, Any] = {
+        "terminate": state == "running",
+        "destination": [worker],
+    }
+    if state == "running":
+        revoke_kwargs["signal"] = "SIGTERM"
+    try:
+        celery_app.control.revoke(task_id, **revoke_kwargs)
+    except Exception as exc:  # noqa: BLE001 - infrastructure failures become an operator response
+        raise QueueControlUnavailableError("The queue job could not be cancelled.") from exc
+
+    from apps.reviews.models import Review
+
+    Review.objects.filter(
+        celery_task_id=task_id,
+        status__in=(Review.PENDING, Review.PROCESSING),
+    ).update(
+        status=Review.CANCELLED,
+        error_message="Cancelled by an operator.",
+        completed_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+    cache.delete(_SNAPSHOT_CACHE_KEY)
+    return {"id": task_id, "state": state}
