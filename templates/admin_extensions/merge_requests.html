@@ -49,11 +49,69 @@
 {% endblock %}
 {% block content %}
 <div class="mb-4"><h4 class="fw-bold mb-1">Merge requests</h4><p class="text-muted mb-0">Imported requests across all configured Git sources.</p></div>
-<div class="card mb-4"><div class="card-body"><div class="d-flex flex-wrap justify-content-between align-items-end gap-3"><form method="get" class="merge-request-filter row align-items-end g-3"><div class="col-12 col-md-4"><label for="project-filter" class="form-label">Project</label><select id="project-filter" name="project" class="form-select"><option value="">All projects</option>{% for project in projects %}<option value="{{ project.pk }}" {% if selected_project == project.pk|stringformat:'s' %}selected{% endif %}>{{ project.full_name }}</option>{% endfor %}</select></div><div class="col-12 col-md-3"><label for="author-filter" class="form-label">Author</label><input id="author-filter" name="author" value="{{ selected_author }}" class="form-control" placeholder="Username"></div><div class="col-12 col-md-3"><label for="name-filter" class="form-label">Name</label><input id="name-filter" name="name" value="{{ selected_name }}" class="form-control" placeholder="Merge-request title"></div><div class="col-12 col-md-auto"><button type="submit" class="btn btn-primary">Filter</button>{% if selected_project or selected_author or selected_name %}<a href="{% url 'admin_extensions:merge_requests' %}" class="btn btn-label-secondary ms-2">Clear</a>{% endif %}</div></form><form method="post" action="{% url 'admin_extensions:run_all_unreviewed_merge_requests' %}" onsubmit="return confirm('Queue AI reviews for all opened merge requests without a review?');">{% csrf_token %}{% if selected_project %}<input type="hidden" name="project" value="{{ selected_project }}">{% endif %}{% if selected_author %}<input type="hidden" name="author" value="{{ selected_author }}">{% endif %}{% if selected_name %}<input type="hidden" name="name" value="{{ selected_name }}">{% endif %}<button type="submit" class="btn btn-label-primary"><i class="bx bx-bot me-1"></i>Review all unreviewed</button></form></div></div></div>
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-end gap-3">
+      <form method="get" class="merge-request-filter row align-items-end g-3 flex-grow-1">
+        <div class="col-12 col-md-4 col-xl-3">
+          <label for="project-filter" class="form-label">Project</label>
+          <select id="project-filter" name="project" class="form-select">
+            <option value="">All projects</option>
+            {% for project in projects %}<option value="{{ project.pk }}" {% if selected_project == project.pk|stringformat:'s' %}selected{% endif %}>{{ project.full_name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-4 col-xl-2">
+          <label for="status-filter" class="form-label">MR status</label>
+          <select id="status-filter" name="status" class="form-select">
+            <option value="">All statuses</option>
+            {% for value, label in status_choices %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-4 col-xl-2">
+          <label for="review-status-filter" class="form-label">AI review</label>
+          <select id="review-status-filter" name="review_status" class="form-select">
+            <option value="">All review statuses</option>
+            <option value="none" {% if selected_review_status == 'none' %}selected{% endif %}>No review</option>
+            {% for value, label in review_status_choices %}<option value="{{ value }}" {% if selected_review_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-4 col-xl-2">
+          <label for="author-filter" class="form-label">Author</label>
+          <input id="author-filter" name="author" value="{{ selected_author }}" class="form-control" placeholder="Username">
+        </div>
+        <div class="col-12 col-md-4 col-xl-2">
+          <label for="name-filter" class="form-label">Name</label>
+          <input id="name-filter" name="name" value="{{ selected_name }}" class="form-control" placeholder="Merge-request title">
+        </div>
+        <div class="col-12 col-md-auto">
+          <button type="submit" class="btn btn-primary">Filter</button>
+          {% if selected_project or selected_author or selected_name or selected_status or selected_review_status %}<a href="{% url 'admin_extensions:merge_requests' %}" class="btn btn-label-secondary ms-2">Clear</a>{% endif %}
+        </div>
+      </form>
+      <form method="post" action="{% url 'admin_extensions:run_all_unreviewed_merge_requests' %}" onsubmit="return confirm('Queue AI reviews for all opened merge requests without a review?');">
+        {% csrf_token %}
+        {% if selected_project %}<input type="hidden" name="project" value="{{ selected_project }}">{% endif %}
+        {% if selected_author %}<input type="hidden" name="author" value="{{ selected_author }}">{% endif %}
+        {% if selected_name %}<input type="hidden" name="name" value="{{ selected_name }}">{% endif %}
+        {% if selected_status %}<input type="hidden" name="status" value="{{ selected_status }}">{% endif %}
+        {% if selected_review_status %}<input type="hidden" name="review_status" value="{{ selected_review_status }}">{% endif %}
+        <button type="submit" class="btn btn-label-primary"><i class="bx bx-bot me-1"></i>Review all unreviewed</button>
+      </form>
+    </div>
+  </div>
+</div>
 <div class="card"><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Request</th><th>Project</th><th>Author</th><th>Status</th><th>AI review</th><th>Updated</th><th></th></tr></thead><tbody>
  {% for merge_request in merge_requests %}<tr><td>{{ forloop.counter0|add:merge_requests.start_index }}</td><td><a href="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}"><div class="fw-semibold">!{{ merge_request.external_iid }} {{ merge_request.title|truncatechars:55 }}</div><small class="text-muted">{{ merge_request.source_branch }} → {{ merge_request.target_branch }}</small></a></td><td>{{ merge_request.project.name }}</td><td>{{ merge_request.author_username }}</td><td><span class="badge {% if merge_request.state == 'opened' %}bg-label-success{% elif merge_request.state == 'draft' %}bg-label-warning{% elif merge_request.state == 'merged' %}bg-label-primary{% else %}bg-label-secondary{% endif %}">{{ merge_request.get_state_display }}</span></td><td>{% if merge_request.latest_review %}<span class="badge {% if merge_request.latest_review.status == 'completed' %}bg-label-success{% elif merge_request.latest_review.status == 'failed' %}bg-label-danger{% elif merge_request.latest_review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ merge_request.latest_review.get_status_display }}</span>{% else %}<span class="text-muted small">No review</span>{% endif %}</td><td>{{ merge_request.external_updated_at|date:"M j, Y H:i" }}</td><td class="text-nowrap"><form method="post" action="{% url 'admin_extensions:run_merge_request_review' merge_request.pk %}" class="d-inline js-review-form">{% csrf_token %}<button type="submit" class="btn btn-sm btn-icon btn-label-primary" title="Run AI review" {% if merge_request.latest_review.status == 'pending' or merge_request.latest_review.status == 'processing' %}disabled{% endif %}><i class="bx bx-bot"></i></button></form> <a href="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}" class="btn btn-sm btn-label-secondary" title="View merge request"><i class="bx bx-show me-1"></i>View details</a></td></tr>{% empty %}<tr><td colspan="8" class="text-center text-muted py-5">No merge requests have been imported yet.</td></tr>{% endfor %}
  </tbody></table></div></div>
- {% if merge_requests_page.has_other_pages %}<nav class="mt-4" aria-label="Merge request pages"><ul class="pagination justify-content-center mb-0">{% if merge_requests_page.has_previous %}<li class="page-item"><a class="page-link" href="?{% if selected_project %}project={{ selected_project }}&amp;{% endif %}{% if selected_author %}author={{ selected_author|urlencode }}&amp;{% endif %}{% if selected_name %}name={{ selected_name|urlencode }}&amp;{% endif %}page={{ merge_requests_page.previous_page_number }}">Previous</a></li>{% endif %}{% for page_number in merge_requests_page.paginator.page_range %}<li class="page-item {% if merge_requests_page.number == page_number %}active{% endif %}"><a class="page-link" href="?{% if selected_project %}project={{ selected_project }}&amp;{% endif %}{% if selected_author %}author={{ selected_author|urlencode }}&amp;{% endif %}{% if selected_name %}name={{ selected_name|urlencode }}&amp;{% endif %}page={{ page_number }}">{{ page_number }}</a></li>{% endfor %}{% if merge_requests_page.has_next %}<li class="page-item"><a class="page-link" href="?{% if selected_project %}project={{ selected_project }}&amp;{% endif %}{% if selected_author %}author={{ selected_author|urlencode }}&amp;{% endif %}{% if selected_name %}name={{ selected_name|urlencode }}&amp;{% endif %}page={{ merge_requests_page.next_page_number }}">Next</a></li>{% endif %}</ul></nav>{% endif %}
+ {% if merge_requests_page.has_other_pages %}
+<nav class="mt-4" aria-label="Merge request pages">
+  <ul class="pagination justify-content-center mb-0">
+    {% if merge_requests_page.has_previous %}<li class="page-item"><a class="page-link" href="?{% if selected_project %}project={{ selected_project }}&amp;{% endif %}{% if selected_author %}author={{ selected_author|urlencode }}&amp;{% endif %}{% if selected_name %}name={{ selected_name|urlencode }}&amp;{% endif %}{% if selected_status %}status={{ selected_status|urlencode }}&amp;{% endif %}{% if selected_review_status %}review_status={{ selected_review_status|urlencode }}&amp;{% endif %}page={{ merge_requests_page.previous_page_number }}">Previous</a></li>{% endif %}
+    {% for page_number in merge_requests_page.paginator.page_range %}<li class="page-item {% if merge_requests_page.number == page_number %}active{% endif %}"><a class="page-link" href="?{% if selected_project %}project={{ selected_project }}&amp;{% endif %}{% if selected_author %}author={{ selected_author|urlencode }}&amp;{% endif %}{% if selected_name %}name={{ selected_name|urlencode }}&amp;{% endif %}{% if selected_status %}status={{ selected_status|urlencode }}&amp;{% endif %}{% if selected_review_status %}review_status={{ selected_review_status|urlencode }}&amp;{% endif %}page={{ page_number }}">{{ page_number }}</a></li>{% endfor %}
+    {% if merge_requests_page.has_next %}<li class="page-item"><a class="page-link" href="?{% if selected_project %}project={{ selected_project }}&amp;{% endif %}{% if selected_author %}author={{ selected_author|urlencode }}&amp;{% endif %}{% if selected_name %}name={{ selected_name|urlencode }}&amp;{% endif %}{% if selected_status %}status={{ selected_status|urlencode }}&amp;{% endif %}{% if selected_review_status %}review_status={{ selected_review_status|urlencode }}&amp;{% endif %}page={{ merge_requests_page.next_page_number }}">Next</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
  <div class="modal fade" id="review-complete-modal" tabindex="-1" aria-labelledby="review-complete-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="review-complete-modal-label">AI review</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div><div class="modal-body" id="review-complete-modal-message"></div><div class="modal-footer"><button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button></div></div></div></div>
 {% endblock %}
 {% block extra_js %}

@@ -477,6 +477,81 @@ class DashboardAccessTests(TestCase):
         self.assertContains(response, 'name="author" value="alice"')
         self.assertContains(response, 'name="name" value="checkout"')
 
+    def test_merge_request_index_filters_by_mr_and_latest_review_status(self) -> None:
+        """MR state and the status of the latest AI review can be combined."""
+        user = get_user_model().objects.create_user(username="status-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="status-filter-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="status-filter-project",
+            name="web",
+            full_name="org/web",
+            web_url="https://github.com/org/web",
+        )
+        provider = AIProvider.objects.create(
+            name="Status filter model", provider_type=AIProvider.OPENAI, model_name="reviewer"
+        )
+
+        matching = MergeRequest.objects.create(
+            project=project,
+            external_id="status-51",
+            external_iid="51",
+            title="Latest review failed",
+            state=MergeRequest.OPENED,
+            author_username="alice",
+            source_branch="feature/status-51",
+            target_branch="main",
+            web_url="https://github.com/org/web/pull/51",
+            opened_at=timezone.now(),
+            external_updated_at=timezone.now(),
+        )
+        Review.objects.create(merge_request=matching, provider=provider, status=Review.COMPLETED)
+        Review.objects.create(merge_request=matching, provider=provider, status=Review.FAILED)
+        merged_without_review = MergeRequest.objects.create(
+            project=project,
+            external_id="status-52",
+            external_iid="52",
+            title="Merged without review",
+            state=MergeRequest.MERGED,
+            author_username="bob",
+            source_branch="feature/status-52",
+            target_branch="main",
+            web_url="https://github.com/org/web/pull/52",
+            opened_at=timezone.now(),
+            external_updated_at=timezone.now(),
+        )
+
+        response = self.client.get(
+            reverse("admin_extensions:merge_requests"),
+            {"status": MergeRequest.OPENED, "review_status": Review.FAILED},
+        )
+
+        self.assertContains(response, matching.title)
+        self.assertNotContains(response, merged_without_review.title)
+        self.assertContains(response, 'name="status"')
+        self.assertContains(response, f'value="{MergeRequest.OPENED}" selected')
+        self.assertContains(response, 'name="review_status"')
+        self.assertContains(response, f'value="{Review.FAILED}" selected')
+
+        no_review_response = self.client.get(
+            reverse("admin_extensions:merge_requests"),
+            {"status": MergeRequest.MERGED, "review_status": "none"},
+        )
+        self.assertContains(no_review_response, merged_without_review.title)
+        self.assertNotContains(no_review_response, matching.title)
+        self.assertContains(no_review_response, 'value="none" selected')
+
+        invalid_response = self.client.get(
+            reverse("admin_extensions:merge_requests"),
+            {"status": "unknown", "review_status": "unknown"},
+        )
+        self.assertEqual(len(invalid_response.context["merge_requests"].object_list), 0)
+
     def test_merge_request_index_paginates_and_preserves_project_filter(self) -> None:
         user = get_user_model().objects.create_user(username="merge-request-pages", password="test-password")
         user.is_staff = True
@@ -508,13 +583,22 @@ class DashboardAccessTests(TestCase):
             )
 
         response = self.client.get(
-            reverse("admin_extensions:merge_requests"), {"project": project.pk, "page": 2}
+            reverse("admin_extensions:merge_requests"),
+            {
+                "project": project.pk,
+                "status": MergeRequest.OPENED,
+                "review_status": "none",
+                "page": 2,
+            },
         )
 
         self.assertEqual(response.context["merge_requests"].paginator.num_pages, 2)
         self.assertEqual(len(response.context["merge_requests"].object_list), 1)
         self.assertContains(response, 'aria-label="Merge request pages"')
-        self.assertContains(response, f"project={project.pk}&amp;page=1")
+        self.assertContains(
+            response,
+            f"project={project.pk}&amp;status=opened&amp;review_status=none&amp;page=1",
+        )
         self.assertContains(response, ">26</td>")
 
     def test_merge_request_index_ignores_invalid_project_filter(self) -> None:
@@ -831,6 +915,20 @@ class DashboardAccessTests(TestCase):
         )
         messages = list(response.wsgi_request._messages)
         self.assertTrue(any("Queued 2 AI review(s)." in str(message) for message in messages))
+
+        with patch(
+            "apps.admin_extensions.views.ReviewQueueService.queue_manual_review", return_value="task-id"
+        ) as filtered_queue_review:
+            filtered_response = self.client.post(
+                reverse("admin_extensions:run_all_unreviewed_merge_requests"),
+                {"status": MergeRequest.CLOSED, "review_status": "none"},
+            )
+
+        self.assertEqual(filtered_queue_review.call_count, 0)
+        self.assertRedirects(
+            filtered_response,
+            f"{reverse('admin_extensions:merge_requests')}?status=closed&review_status=none",
+        )
 
     def test_bulk_review_reports_skipped_merge_requests(self) -> None:
         """A configuration failure does not prevent other bulk reviews from being queued."""
