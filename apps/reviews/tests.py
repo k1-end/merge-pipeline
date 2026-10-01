@@ -339,6 +339,12 @@ def test_pipeline_persists_structured_review(
     review = ReviewPipeline().run_review(merge_request)
     assert review.status == Review.COMPLETED
     assert ReviewComment.objects.get(review=review).content == "Bad path"
+    provider_log = "".join(
+        review.execution_log_chunks.filter(
+            stream=ReviewExecutionLogChunk.PROVIDER
+        ).values_list("content", flat=True)
+    )
+    assert '"ok": true' in provider_log
 
 
 def test_pipeline_persists_all_log_chunks_for_failed_review(

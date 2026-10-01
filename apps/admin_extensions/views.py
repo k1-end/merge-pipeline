@@ -1,12 +1,14 @@
+from collections.abc import Iterator
 from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.paginator import Paginator
 from django.db.models import Exists, OuterRef, Prefetch
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 
 from apps.admin_extensions.forms import ProviderForm, SourceForm
 from apps.projects.models import MergeRequest, Project, RemoteMRComment, RemoteMRReview
@@ -379,9 +381,33 @@ def review_detail(request: HttpRequest, pk: int) -> HttpResponse:
         "review": review,
         "comments": comments,
         "unresolved_comments": [comment for comment in comments if not comment.is_resolved],
+        "has_execution_logs": review.execution_log_chunks.exists(),
         "finding_count": len(review.findings or []),
     }
     return render(request, "admin_extensions/review_detail.html", context)
+
+
+@staff_member_required(login_url="admin:login")
+@xframe_options_sameorigin
+def review_execution_log(request: HttpRequest, pk: int) -> StreamingHttpResponse:
+    """Stream every provider log chunk in write order without loading the full log."""
+    review = get_object_or_404(Review, pk=pk)
+
+    def content() -> Iterator[str]:
+        current_stream = None
+        chunks = review.execution_log_chunks.order_by("sequence").values_list("stream", "content")
+        for stream, chunk in chunks.iterator():
+            if stream != current_stream:
+                separator = "" if current_stream is None else "\n"
+                yield f"{separator}[{stream}]\n"
+                current_stream = stream
+            yield chunk
+
+    response = StreamingHttpResponse(content(), content_type="text/plain; charset=utf-8")
+    response["X-Content-Type-Options"] = "nosniff"
+    if request.GET.get("download") == "1":
+        response["Content-Disposition"] = f'attachment; filename="review-{review.pk}-execution.log"'
+    return response
 
 
 @staff_member_required(login_url="admin:login")

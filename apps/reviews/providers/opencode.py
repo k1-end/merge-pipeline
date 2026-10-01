@@ -6,6 +6,7 @@ from time import monotonic
 
 from django.conf import settings
 
+from apps.reviews.models import ReviewExecutionLogChunk
 from apps.reviews.opencode_output import OpenCodeOutputError, collect_assistant_text
 from apps.reviews.providers.base import BaseAIProvider, ProviderError, ReviewRequest, ReviewResponse
 
@@ -37,6 +38,13 @@ class OpenCodeProvider(BaseAIProvider):
         environment = os.environ.copy()
         if settings.OPENCODE_CONFIG_DIR:
             environment["OPENCODE_CONFIG_DIR"] = settings.OPENCODE_CONFIG_DIR
+        request.write_log(
+            ReviewExecutionLogChunk.SYSTEM,
+            (
+                "Starting OpenCode review "
+                f"(agent={settings.OPENCODE_AGENT}, model={self.config.model_name}, format=json)\n"
+            ),
+        )
         try:
             result = (
                 subprocess.run(  # noqa: S603 - executable and arguments are configured, never shell-evaluated
@@ -49,12 +57,28 @@ class OpenCodeProvider(BaseAIProvider):
                     check=False,
                 )
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ProviderError("OpenCode execution failed or timed out") from exc
+        except subprocess.TimeoutExpired as exc:
+            request.write_log(ReviewExecutionLogChunk.STDOUT, _output_text(exc.stdout))
+            request.write_log(ReviewExecutionLogChunk.STDERR, _output_text(exc.stderr))
+            request.write_log(
+                ReviewExecutionLogChunk.SYSTEM,
+                f"OpenCode timed out after {settings.OPENCODE_TIMEOUT_SECONDS} seconds\n",
+            )
+            raise ProviderError("OpenCode execution timed out") from exc
+        except OSError as exc:
+            request.write_log(
+                ReviewExecutionLogChunk.SYSTEM,
+                f"OpenCode could not be started: {type(exc).__name__}\n",
+            )
+            raise ProviderError("OpenCode execution failed to start") from exc
+        request.write_log(ReviewExecutionLogChunk.STDOUT, result.stdout)
+        request.write_log(ReviewExecutionLogChunk.STDERR, result.stderr)
+        request.write_log(
+            ReviewExecutionLogChunk.SYSTEM,
+            f"OpenCode exited with code {result.returncode}\n",
+        )
         if result.returncode != 0:
-            raise ProviderError("OpenCode execution failed")
-        if len(result.stdout.encode()) > settings.OPENCODE_MAX_OUTPUT_BYTES:
-            raise ProviderError("OpenCode output exceeded the configured limit")
+            raise ProviderError(f"OpenCode execution failed with exit code {result.returncode}")
         try:
             content, events = collect_assistant_text(result.stdout)
         except OpenCodeOutputError as exc:
@@ -63,7 +87,7 @@ class OpenCodeProvider(BaseAIProvider):
         return ReviewResponse(
             content,
             [],
-            {"events": events, "stderr": result.stderr[-4000:]},
+            {"event_count": len(events)},
             usage[0],
             usage[1],
             0,
@@ -111,3 +135,12 @@ def _usage(events: list[dict]) -> tuple[int, int]:
                 usage.get("output_tokens", usage.get("completion_tokens", output_tokens)) or output_tokens
             )
     return input_tokens, output_tokens
+
+
+def _output_text(output: str | bytes | None) -> str:
+    """Normalize partial timeout output without dropping undecodable bytes."""
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return output

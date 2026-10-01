@@ -88,3 +88,33 @@ class ReviewComment(TimestampedModel):
         """Database mapping for review comments."""
         db_table = "review_comments"
         indexes = [models.Index(fields=["review"]), models.Index(fields=["external_comment_id"])]
+
+
+class ReviewExecutionLogChunk(TimestampedModel):
+    """An ordered, lossless chunk of provider output for one review execution."""
+
+    SYSTEM = "system"
+    STDOUT = "stdout"
+    STDERR = "stderr"
+    PROVIDER = "provider"
+    STREAMS = (
+        (SYSTEM, "System"),
+        (STDOUT, "Standard output"),
+        (STDERR, "Standard error"),
+        (PROVIDER, "Provider response"),
+    )
+    CHUNK_SIZE = 64 * 1024
+
+    review = models.ForeignKey(Review, on_delete=models.CASCADE, related_name="execution_log_chunks")
+    sequence = models.PositiveBigIntegerField()
+    stream = models.CharField(max_length=20, choices=STREAMS)
+    content = models.TextField()
+
+    class Meta:
+        """Keep chunks in their original write order without imposing a total size limit."""
+        db_table = "review_execution_log_chunks"
+        ordering = ["sequence"]
+        constraints = [
+            models.UniqueConstraint(fields=["review", "sequence"], name="review_log_chunk_sequence_unique")
+        ]
+        indexes = [models.Index(fields=["review", "sequence"])]

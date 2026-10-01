@@ -1,5 +1,6 @@
 """Cost-aware review orchestration."""
 
+import json
 from contextlib import nullcontext
 from time import monotonic
 
@@ -7,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.projects.models import MergeRequest
+from apps.reviews.execution_logs import ReviewExecutionLogRecorder
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.parsers import parse_review_response
 from apps.reviews.providers import PROVIDER_MAP
@@ -37,7 +39,6 @@ class ReviewPipeline:
             raise ValueError("No active AI provider configured")
         return provider
 
-    @transaction.atomic
     def run_review(self, mr: MergeRequest) -> Review:
         """Execute and persist a complete review."""
         provider_config = self.select_provider(mr)
@@ -54,6 +55,12 @@ class ReviewPipeline:
         if provider.estimate_cost(request) > self.budget_limit:
             raise BudgetExceededError("Review exceeds configured budget")
         review = Review.objects.create(merge_request=mr, provider=provider_config, status=Review.PROCESSING)
+        log_recorder = ReviewExecutionLogRecorder(review)
+        request.log_handler = log_recorder.write
+        log_recorder.write(
+            "system",
+            f"Starting provider {provider_config.provider_type} with model {provider_config.model_name}\n",
+        )
         started = monotonic()
         try:
             workspace = (
@@ -73,6 +80,7 @@ class ReviewPipeline:
                     review.head_sha = workspace.head_sha
                     review.merge_base_sha = workspace.merge_base_sha
                 response = provider.review(request)
+            log_recorder.write("provider", _serialize_provider_response(response.raw_response))
             summary, findings = parse_review_response(response.summary)
             review.summary = summary
             review.findings = findings
@@ -83,11 +91,13 @@ class ReviewPipeline:
             review.duration_ms = response.duration_ms or int((monotonic() - started) * 1000)
             review.status = Review.COMPLETED
             review.completed_at = timezone.now()
-            review.save()
-            ReviewComment.objects.bulk_create(
-                [ReviewComment(review=review, **finding) for finding in findings]
-            )
+            with transaction.atomic():
+                review.save()
+                ReviewComment.objects.bulk_create(
+                    [ReviewComment(review=review, **finding) for finding in findings]
+                )
         except Exception as exc:
+            log_recorder.write("system", f"Review failed: {type(exc).__name__}: {exc}\n")
             review.status = Review.FAILED
             review.error_message = str(exc)
             review.duration_ms = int((monotonic() - started) * 1000)
@@ -106,3 +116,10 @@ class ReviewPipeline:
             )
             raise
         return review
+
+
+def _serialize_provider_response(raw_response: object) -> str:
+    """Render the complete normalized provider response without a size cap."""
+    if isinstance(raw_response, str):
+        return raw_response
+    return json.dumps(raw_response, ensure_ascii=False, indent=2, default=str)

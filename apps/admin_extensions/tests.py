@@ -233,6 +233,7 @@ class DashboardAccessTests(TestCase):
         body = b"".join(log_response.streaming_content).decode()
         self.assertEqual(body, "[stdout]\nfirst chunk\n\n[stderr]\n<unsafe>second chunk")
         self.assertEqual(log_response["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(log_response["X-Frame-Options"], "SAMEORIGIN")
 
     def test_review_execution_log_requires_staff(self) -> None:
         """Review logs remain behind the same staff boundary as the dashboard."""

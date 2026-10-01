@@ -1,5 +1,6 @@
 """Provider contracts and shared HTTP implementation."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,7 @@ from apps.reviews.models import AIProvider
 @dataclass
 class ReviewRequest:
     """Input sent to an AI provider."""
+
     mr_title: str
     mr_description: str
     changes: list[MRChange]
@@ -23,11 +25,18 @@ class ReviewRequest:
     base_sha: str = ""
     head_sha: str = ""
     merge_base_sha: str = ""
+    log_handler: Callable[[str, str], None] | None = None
+
+    def write_log(self, stream: str, content: str) -> None:
+        """Send complete provider output to the review's persistent log recorder."""
+        if self.log_handler is not None and content:
+            self.log_handler(stream, content)
 
 
 @dataclass
 class ReviewResponse:
     """Normalized provider response."""
+
     summary: str
     findings: list[dict]
     raw_response: Any
@@ -57,7 +66,9 @@ class BaseAIProvider:
         """Render title, description, and diffs into a bounded prompt."""
         changes = "\n\n".join(f"FILE: {change.file_path}\n{change.diff}" for change in request.changes)
         changes = changes[: settings.MAX_REVIEW_DIFF_BYTES]
-        return request.review_prompt.format(title=request.mr_title, description=request.mr_description, changes=changes)
+        return request.review_prompt.format(
+            title=request.mr_title, description=request.mr_description, changes=changes
+        )
 
     def review(self, request: ReviewRequest) -> ReviewResponse:
         """Call the provider and normalize its response."""
