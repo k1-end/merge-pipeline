@@ -43,6 +43,15 @@ def run_git(cwd: Path, *arguments: str) -> None:
     )
 
 
+def read_git(cwd: Path, *arguments: str) -> str:
+    """Return output from trusted read-only Git fixture commands."""
+    executable = shutil.which("git")
+    assert executable is not None
+    return subprocess.run(  # noqa: S603 - test arguments are static
+        [executable, *arguments], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
 @pytest.fixture
 def project(db: Any) -> Project:
     """Create a project for review tests."""
@@ -117,11 +126,33 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
     monkeypatch.setattr("apps.reviews.providers.opencode.subprocess.run", run)
     config = AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
     response = OpenCodeProvider(config).review(
-        ReviewRequest("Fix", "", [], "Review", "Review {title}", workspace_path="review-workspace")
+        ReviewRequest(
+            "Fix",
+            "",
+            [],
+            "Review",
+            "Review {title}",
+            workspace_path="review-workspace",
+            source_branch="fix",
+            target_branch="main",
+            base_sha="a" * 40,
+            head_sha="b" * 40,
+            merge_base_sha="c" * 40,
+        )
     )
     assert response.summary == '{"summary":"ok","findings":[]}'
     command = run.call_args.args[0]
-    assert command[:7] == ["opencode", "run", "--dir", "review-workspace", "--agent", "review", "--format"]
+    assert command[:8] == [
+        "opencode",
+        "run",
+        "--agent",
+        "review",
+        "--model",
+        "opencode/test",
+        "--format",
+        "json",
+    ]
+    assert f"git diff --find-renames {'a' * 40}...{'b' * 40}" in command[-1]
 
 
 def test_manual_review_queue_rejects_active_duplicate(merge_request: MergeRequest) -> None:
@@ -177,10 +208,18 @@ def test_review_workspace_uses_persistent_cache(project: Project, settings: Any,
     cache.clone()
 
     assert cache.exists()
-    with ReviewWorkspace(project, "fix") as workspace:
+    main_sha = read_git(origin, "rev-parse", "main")
+    fix_sha = read_git(origin, "rev-parse", "fix")
+
+    review_workspace = ReviewWorkspace(project, "fix", "main")
+    with review_workspace as workspace:
         workspace_path = Path(workspace)
         assert (workspace_path / "app.py").read_text(encoding="utf-8") == "fix\n"
         assert workspace_path.is_dir()
+        assert review_workspace.base_sha == main_sha
+        assert review_workspace.head_sha == fix_sha
+        assert review_workspace.merge_base_sha == main_sha
+        assert read_git(workspace_path, "diff", "--name-only", f"{main_sha}...{fix_sha}") == "app.py"
     assert not workspace_path.exists()
     assert cache.exists()
 

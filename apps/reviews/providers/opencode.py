@@ -15,7 +15,7 @@ class OpenCodeProvider(BaseAIProvider):
 
     def estimate_cost(self, request: ReviewRequest) -> float:
         """Return the configured estimate because CLI usage is provider-dependent."""
-        return float(self.config.input_cost_per_million) * len(self._prompt(request)) / 4 / 1_000_000
+        return float(self.config.input_cost_per_million) * len(self._build_prompt(request)) / 4 / 1_000_000
 
     def review(self, request: ReviewRequest) -> ReviewResponse:
         """Invoke OpenCode in non-interactive JSON output mode."""
@@ -26,10 +26,10 @@ class OpenCodeProvider(BaseAIProvider):
         command = [
             settings.OPENCODE_BINARY,
             "run",
-            "--dir",
-            request.workspace_path,
             "--agent",
             settings.OPENCODE_AGENT,
+            "--model",
+            self.config.model_name,
             "--format",
             "json",
             prompt,
@@ -71,10 +71,24 @@ class OpenCodeProvider(BaseAIProvider):
         )
 
     def _build_prompt(self, request: ReviewRequest) -> str:
-        """Give OpenCode repository context while requiring the existing schema."""
+        """Give OpenCode an immutable repository comparison and output contract."""
+        comparison = (
+            f"git diff --find-renames {request.base_sha}...{request.head_sha}"
+            if request.base_sha and request.head_sha
+            else "git diff --find-renames against the supplied target branch"
+        )
         return (
-            f"{request.system_prompt}\n\n{self._prompt(request)}\n\n"
-            "Inspect the repository and current changes without modifying files. "
+            f"{request.system_prompt}\n\n"
+            f"Review this merge request.\nTitle: {request.mr_title}\n"
+            f"Description: {request.mr_description}\n"
+            f"Feature branch: {request.source_branch}\nTarget branch: {request.target_branch}\n"
+            f"Head SHA: {request.head_sha}\nBase SHA: {request.base_sha}\n"
+            f"Merge-base SHA: {request.merge_base_sha}\n\n"
+            f"Use this authoritative comparison: {comparison}\n"
+            "First enumerate every changed file from that comparison. Review every changed file, "
+            "and inspect surrounding implementations, callers, tests, configuration, and migrations "
+            "where relevant. Do not rely on an API-provided or prompt-embedded diff. "
+            "Inspect the repository without modifying files. "
             "Return only JSON with this shape: "
             '{"summary":"string","findings":[{"file":"path","line":1,"type":"issue",'
             '"severity":"high","message":"string"}]}.'

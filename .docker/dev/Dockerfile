@@ -20,7 +20,8 @@ COPY requirements/ /app/requirements/
 RUN pip install --upgrade pip \
     && pip install -r requirements/development.txt
 
-RUN curl -fsSL https://opencode.ai/install | bash \
+ARG OPENCODE_VERSION=2.0.21
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "${OPENCODE_VERSION}" --no-modify-path \
     && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
     && rm -rf /root/.opencode
 

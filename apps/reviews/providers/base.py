@@ -20,6 +20,9 @@ class ReviewRequest:
     workspace_path: str | None = None
     source_branch: str = ""
     target_branch: str = ""
+    base_sha: str = ""
+    head_sha: str = ""
+    merge_base_sha: str = ""
 
 
 @dataclass

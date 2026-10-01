@@ -90,7 +90,9 @@ in a Docker-managed named volume. Repository caches are never bind-mounted into 
 host checkout. Reviews refuse to run when the cache is missing; they fetch the requested
 branch into the cache, create a temporary worktree, and remove that worktree afterward.
 
-The bundled `.opencode/agents/review.md` agent denies edits, shell commands, web
-access, and subagents. Review output is expected to be JSON and is validated by the
+The bundled `.opencode/agents/review.md` agent denies edits, web access, subagents,
+and arbitrary shell commands while allowing read-only Git inspection. Each review
+fetches and pins both MR branches, then compares the target branch to the feature
+branch with three-dot diff semantics. Review output is expected to be JSON and is validated by the
 same parser used by the HTTP providers. Review comments are still published only by
 the separate `post_review_comments` task.

@@ -41,7 +41,8 @@ COPY --from=builder /install /usr/local
 
 # OpenCode is used only by the Celery worker, but the shared image keeps the
 # web and worker images reproducible until they are split operationally.
-RUN curl -fsSL https://opencode.ai/install | bash \
+ARG OPENCODE_VERSION=2.0.21
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "${OPENCODE_VERSION}" --no-modify-path \
     && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
     && rm -rf /root/.opencode
 

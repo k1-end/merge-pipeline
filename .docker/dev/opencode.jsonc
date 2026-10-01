@@ -1,15 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "flearning/gpt-5.6-luna",
-  "provider": {
+  "providers": {
     "locallmstudio": {
-      "npm": "@ai-sdk/openai-compatible",
+      "package": "@opencode/ai/providers/openai-compatible",
       "name": "locallmstudio",
-      "options": {
-        "baseURL": "http://192.168.81.109:1234/v1",
-        "headers": {
-          "Authorization": "apikey *********************************"
-        }
+      "settings": {
+        "baseURL": "http://192.168.81.109:1234/v1"
+      },
+      "headers": {
+        "Authorization": "apikey *********************************"
       },
       "models": {
         "gemma-4-e4b-it": {
@@ -18,7 +18,7 @@
             "context": 128000,
             "output": 128000
           },
-          "options": {
+          "settings": {
             "textVerbosity": "low",
             "reasoningSummary": "on"
           }
@@ -26,14 +26,14 @@
       }
     },
     "flearning": {
-      "npm": "@ai-sdk/openai",
+      "package": "@opencode/ai/providers/openai",
       "name": "FLearning Proxy",
-      "options": {
-        "baseURL": "https://claude.flearning.ir/backend-api/codex",
-        "apiKey": "{env:FLEARNING_API_KEY}",
-        "headers": {
-          "x-openai-actor-authorization": "enabled"
-        }
+      "env": ["FLEARNING_API_KEY"],
+      "settings": {
+        "baseURL": "https://claude.flearning.ir/backend-api/codex"
+      },
+      "headers": {
+        "x-openai-actor-authorization": "enabled"
       },
       "models": {
         "gpt-5.5": {

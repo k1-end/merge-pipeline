@@ -58,6 +58,11 @@ class Review(TimestampedModel):
     duration_ms = models.PositiveIntegerField(default=0)
     error_message = models.TextField(blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    source_branch = models.CharField(max_length=255, blank=True)
+    target_branch = models.CharField(max_length=255, blank=True)
+    base_sha = models.CharField(max_length=64, blank=True)
+    head_sha = models.CharField(max_length=64, blank=True)
+    merge_base_sha = models.CharField(max_length=64, blank=True)
 
     class Meta:
         """Database mapping and review lookup indexes."""

@@ -57,12 +57,21 @@ class ReviewPipeline:
         started = monotonic()
         try:
             workspace = (
-                ReviewWorkspace(mr.project, mr.source_branch)
+                ReviewWorkspace(mr.project, mr.source_branch, mr.target_branch)
                 if provider_config.provider_type == AIProvider.OPENCODE
                 else nullcontext(None)
             )
             with workspace as workspace_path:
                 request.workspace_path = workspace_path
+                if isinstance(workspace, ReviewWorkspace):
+                    request.base_sha = workspace.base_sha
+                    request.head_sha = workspace.head_sha
+                    request.merge_base_sha = workspace.merge_base_sha
+                    review.source_branch = mr.source_branch
+                    review.target_branch = mr.target_branch
+                    review.base_sha = workspace.base_sha
+                    review.head_sha = workspace.head_sha
+                    review.merge_base_sha = workspace.merge_base_sha
                 response = provider.review(request)
             summary, findings = parse_review_response(response.summary)
             review.summary = summary
@@ -82,6 +91,18 @@ class ReviewPipeline:
             review.status = Review.FAILED
             review.error_message = str(exc)
             review.duration_ms = int((monotonic() - started) * 1000)
-            review.save(update_fields=["status", "error_message", "duration_ms", "updated_at"])
+            review.save(
+                update_fields=[
+                    "status",
+                    "error_message",
+                    "duration_ms",
+                    "source_branch",
+                    "target_branch",
+                    "base_sha",
+                    "head_sha",
+                    "merge_base_sha",
+                    "updated_at",
+                ]
+            )
             raise
         return review
