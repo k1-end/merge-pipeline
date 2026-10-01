@@ -1,6 +1,7 @@
 """Parse OpenCode's JSON event output into assistant text."""
 
 import json
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -27,6 +28,39 @@ def collect_assistant_text(output: str) -> tuple[str, list[dict[str, Any]]]:
     if not content:
         raise OpenCodeOutputError("OpenCode returned no assistant response")
     return content, events
+
+
+def collect_assistant_result(lines: Iterable[str]) -> tuple[str, int, int, int]:
+    """Parse a line stream without retaining all OpenCode events in memory."""
+    text_parts: list[str] = []
+    event_count = 0
+    input_tokens = output_tokens = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise OpenCodeOutputError("OpenCode returned malformed JSON output") from exc
+        if not isinstance(event, dict):
+            continue
+        event_count += 1
+        _collect_text(event, text_parts)
+        properties = event.get("properties", event)
+        if not isinstance(properties, dict):
+            continue
+        usage = properties.get("usage", properties)
+        if isinstance(usage, dict):
+            input_tokens = int(
+                usage.get("input_tokens", usage.get("prompt_tokens", input_tokens)) or input_tokens
+            )
+            output_tokens = int(
+                usage.get("output_tokens", usage.get("completion_tokens", output_tokens)) or output_tokens
+            )
+    content = "".join(text_parts).strip()
+    if not content:
+        raise OpenCodeOutputError("OpenCode returned no assistant response")
+    return content, event_count, input_tokens, output_tokens
 
 
 def _collect_text(value: Any, text_parts: list[str]) -> None:

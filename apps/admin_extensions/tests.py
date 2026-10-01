@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from apps.credentials.models import GitSourceCredential
 from apps.projects.models import MergeRequest, MRChange, Project, RemoteMRComment
-from apps.reviews.models import AIProvider, Review, ReviewComment
+from apps.reviews.models import AIProvider, Review, ReviewComment, ReviewExecutionLogChunk
 from apps.reviews.services import ReviewConfigurationError
 from apps.sources.models import GitSource
 
@@ -182,6 +182,114 @@ class DashboardAccessTests(TestCase):
         response = self.client.get(reverse("admin_extensions:reviews"))
 
         self.assertContains(response, reverse("admin_extensions:review_detail", args=[review.pk]))
+
+    def test_review_detail_embeds_complete_execution_log(self) -> None:
+        """Operators can inspect and download every stored execution-log chunk."""
+        user = get_user_model().objects.create_user(username="log-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="review-log-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="review-log-project",
+            name="logs",
+            full_name="org/logs",
+            web_url="https://github.com/org/logs",
+        )
+        merge_request = MergeRequest.objects.create(
+            project=project,
+            external_id="23",
+            external_iid="23",
+            title="Keep provider logs",
+            state=MergeRequest.OPENED,
+            author_username="dev",
+            source_branch="feature/logs",
+            target_branch="main",
+            web_url="https://github.com/org/logs/pull/23",
+            opened_at=timezone.now(),
+            external_updated_at=timezone.now(),
+        )
+        provider = AIProvider.objects.create(
+            name="Log model", provider_type=AIProvider.OPENCODE, model_name="reviewer"
+        )
+        review = Review.objects.create(merge_request=merge_request, provider=provider)
+        ReviewExecutionLogChunk.objects.create(
+            review=review, sequence=0, stream=ReviewExecutionLogChunk.STDOUT, content=b"first chunk\n"
+        )
+        ReviewExecutionLogChunk.objects.bulk_create(
+            [
+                ReviewExecutionLogChunk(
+                    review=review,
+                    sequence=sequence,
+                    stream=ReviewExecutionLogChunk.STDOUT,
+                    content=b"x",
+                )
+                for sequence in range(1, 501)
+            ]
+        )
+        ReviewExecutionLogChunk.objects.create(
+            review=review,
+            sequence=501,
+            stream=ReviewExecutionLogChunk.STDERR,
+            content=b"<unsafe>second chunk",
+        )
+
+        detail = self.client.get(reverse("admin_extensions:review_detail", args=[review.pk]))
+        log_url = reverse("admin_extensions:review_execution_log", args=[review.pk])
+        log_response = self.client.get(log_url)
+        download_response = self.client.get(f"{log_url}?download=1")
+
+        self.assertContains(detail, "Execution logs")
+        self.assertContains(detail, log_url)
+        self.assertEqual(log_response.status_code, 200)
+        body = b"".join(log_response.streaming_content).decode()
+        expected = f"[stdout]\nfirst chunk\n{'x' * 500}\n[stderr]\n<unsafe>second chunk"
+        self.assertEqual(body, expected)
+        self.assertEqual(b"".join(download_response.streaming_content).decode(), expected)
+        self.assertEqual(log_response["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(log_response["X-Frame-Options"], "SAMEORIGIN")
+        self.assertIn("no-store", log_response["Cache-Control"])
+        self.assertEqual(
+            download_response["Content-Disposition"],
+            f'attachment; filename="review-{review.pk}-execution.log"',
+        )
+
+    def test_review_execution_log_requires_staff(self) -> None:
+        """Review logs remain behind the same staff boundary as the dashboard."""
+        source = GitSource.objects.create(
+            name="private-log-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="private-log-project",
+            name="private",
+            full_name="org/private",
+            web_url="https://github.com/org/private",
+        )
+        merge_request = MergeRequest.objects.create(
+            project=project,
+            external_id="24",
+            external_iid="24",
+            title="Private logs",
+            state=MergeRequest.OPENED,
+            author_username="dev",
+            source_branch="feature/private",
+            target_branch="main",
+            web_url="https://github.com/org/private/pull/24",
+            opened_at=timezone.now(),
+            external_updated_at=timezone.now(),
+        )
+        provider = AIProvider.objects.create(
+            name="Private log model", provider_type=AIProvider.OPENCODE, model_name="reviewer"
+        )
+        review = Review.objects.create(merge_request=merge_request, provider=provider)
+
+        response = self.client.get(reverse("admin_extensions:review_execution_log", args=[review.pk]))
+
+        self.assertEqual(response.status_code, 302)
 
     def test_reviews_index_paginates_at_25_items(self) -> None:
         user = get_user_model().objects.create_user(username="review-pages", password="test-password")

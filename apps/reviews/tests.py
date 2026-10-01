@@ -12,11 +12,12 @@ from cryptography.fernet import Fernet
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
 from apps.projects.models import MergeRequest, MRChange, Project
-from apps.reviews.models import AIProvider, Review, ReviewComment
+from apps.reviews.execution_logs import ReviewExecutionLogRecorder
+from apps.reviews.models import AIProvider, Review, ReviewComment, ReviewExecutionLogChunk
 from apps.reviews.opencode_output import collect_assistant_text
 from apps.reviews.parsers import ReviewParseError, parse_review_response
 from apps.reviews.pipeline import BudgetExceededError, ReviewPipeline
-from apps.reviews.providers.base import ReviewRequest
+from apps.reviews.providers.base import ProviderError, ReviewRequest
 from apps.reviews.providers.opencode import OpenCodeProvider
 from apps.reviews.repository_cache import (
     RepositoryCache,
@@ -32,6 +33,19 @@ from apps.reviews.services import (
 from apps.reviews.tasks import _raise_or_retry_missing_cache
 from apps.reviews.workspaces import ReviewWorkspace
 from apps.sources.models import GitSource
+
+
+def popen_mock(stdout: bytes, stderr: bytes, returncode: int) -> Mock:
+    """Build a Popen mock that writes bytes to the supplied spool files."""
+    process = Mock()
+    process.wait.return_value = returncode
+
+    def create(*args: Any, **kwargs: Any) -> Mock:
+        kwargs["stdout"].write(stdout)
+        kwargs["stderr"].write(stderr)
+        return process
+
+    return Mock(side_effect=create)
 
 
 def run_git(cwd: Path, *arguments: str) -> None:
@@ -117,13 +131,12 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
     settings.OPENCODE_AGENT = "review"
     settings.OPENCODE_TIMEOUT_SECONDS = 30
     settings.OPENCODE_MAX_OUTPUT_BYTES = 100_000
-    completed = Mock(
-        returncode=0,
-        stdout='{"type":"text","text":"{\\"summary\\":\\"ok\\",\\"findings\\":[]}"}\n',
-        stderr="",
+    popen = popen_mock(
+        b'{"type":"text","text":"{\\"summary\\":\\"ok\\",\\"findings\\":[]}"}\n',
+        b"",
+        0,
     )
-    run = Mock(return_value=completed)
-    monkeypatch.setattr("apps.reviews.providers.opencode.subprocess.run", run)
+    monkeypatch.setattr("apps.reviews.providers.opencode.subprocess.Popen", popen)
     config = AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
     response = OpenCodeProvider(config).review(
         ReviewRequest(
@@ -141,7 +154,7 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
         )
     )
     assert response.summary == '{"summary":"ok","findings":[]}'
-    command = run.call_args.args[0]
+    command = popen.call_args.args[0]
     assert command[:8] == [
         "opencode",
         "run",
@@ -153,6 +166,70 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
         "json",
     ]
     assert f"git diff --find-renames {'a' * 40}...{'b' * 40}" in command[-1]
+
+
+def test_opencode_provider_emits_complete_untruncated_output(
+    monkeypatch: Any, settings: Any
+) -> None:
+    """OpenCode stdout and stderr are emitted in full even above the legacy limit."""
+    settings.OPENCODE_BINARY = "opencode"
+    settings.OPENCODE_AGENT = "review"
+    settings.OPENCODE_TIMEOUT_SECONDS = 30
+    settings.OPENCODE_MAX_OUTPUT_BYTES = 8
+    stdout = '{"type":"text","text":"{\\"summary\\":\\"ok\\",\\"findings\\":[]}"}\n'
+    stderr = "diagnostic-" * 1000
+    monkeypatch.setattr(
+        "apps.reviews.providers.opencode.subprocess.Popen",
+        popen_mock(stdout.encode(), stderr.encode(), 0),
+    )
+    captured: list[tuple[str, str | bytes]] = []
+    request = ReviewRequest(
+        "Fix",
+        "",
+        [],
+        "Review",
+        "Review {title}",
+        workspace_path="review-workspace",
+        log_handler=lambda stream, content: captured.append((stream, content)),
+    )
+
+    OpenCodeProvider(
+        AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
+    ).review(request)
+
+    assert (ReviewExecutionLogChunk.STDOUT, stdout.encode()) in captured
+    assert (ReviewExecutionLogChunk.STDERR, stderr.encode()) in captured
+
+
+def test_opencode_provider_emits_output_before_nonzero_exit(
+    monkeypatch: Any, settings: Any
+) -> None:
+    """Diagnostics from a failed process are retained before the provider raises."""
+    settings.OPENCODE_BINARY = "opencode"
+    settings.OPENCODE_AGENT = "review"
+    settings.OPENCODE_TIMEOUT_SECONDS = 30
+    monkeypatch.setattr(
+        "apps.reviews.providers.opencode.subprocess.Popen",
+        popen_mock(b"partial output", b"fatal detail", 9),
+    )
+    captured: list[tuple[str, str | bytes]] = []
+    request = ReviewRequest(
+        "Fix",
+        "",
+        [],
+        "Review",
+        "Review {title}",
+        workspace_path="review-workspace",
+        log_handler=lambda stream, content: captured.append((stream, content)),
+    )
+
+    with pytest.raises(ProviderError, match="exit code 9"):
+        OpenCodeProvider(
+            AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
+        ).review(request)
+
+    assert (ReviewExecutionLogChunk.STDOUT, b"partial output") in captured
+    assert (ReviewExecutionLogChunk.STDERR, b"fatal detail") in captured
 
 
 def test_manual_review_queue_rejects_active_duplicate(merge_request: MergeRequest) -> None:
@@ -275,6 +352,92 @@ def test_pipeline_persists_structured_review(
     review = ReviewPipeline().run_review(merge_request)
     assert review.status == Review.COMPLETED
     assert ReviewComment.objects.get(review=review).content == "Bad path"
+    provider_log = b"".join(
+        review.execution_log_chunks.filter(
+            stream=ReviewExecutionLogChunk.PROVIDER
+        ).values_list("content", flat=True)
+    )
+    assert b'"ok": true' in provider_log
+
+
+def test_pipeline_persists_all_log_chunks_for_failed_review(
+    merge_request: MergeRequest, monkeypatch: Any
+) -> None:
+    """A provider failure keeps the failed review and every emitted log chunk."""
+    AIProvider.objects.create(
+        name="failing", provider_type=AIProvider.CUSTOM, model_name="mock", is_default=True
+    )
+    first = "a" * (ReviewExecutionLogChunk.CHUNK_SIZE + 17)
+    second = "failure diagnostics"
+
+    class FailingProvider:
+        def __init__(self, config: AIProvider) -> None:
+            self.config = config
+
+        def estimate_cost(self, request: ReviewRequest) -> float:
+            return 0
+
+        def review(self, request: ReviewRequest) -> None:
+            request.write_log(ReviewExecutionLogChunk.STDOUT, first)
+            request.write_log(ReviewExecutionLogChunk.STDERR, second)
+            raise ProviderError("provider failed")
+
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        AIProvider.CUSTOM,
+        FailingProvider,
+    )
+
+    with pytest.raises(ProviderError, match="provider failed"):
+        ReviewPipeline().run_review(merge_request)
+
+    review = Review.objects.get(merge_request=merge_request)
+    assert review.status == Review.FAILED
+    chunks = list(review.execution_log_chunks.order_by("sequence"))
+    assert b"".join(
+        chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT
+    ) == first.encode()
+    assert b"".join(
+        chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDERR
+    ) == second.encode()
+    assert len([chunk for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT]) == 2
+
+
+def test_execution_log_recorder_preserves_arbitrary_bytes(merge_request: MergeRequest) -> None:
+    """Provider bytes round-trip exactly without replacement decoding or truncation."""
+    provider = AIProvider.objects.create(name="binary", provider_type=AIProvider.CUSTOM, model_name="mock")
+    review = Review.objects.create(merge_request=merge_request, provider=provider)
+    output = b"valid utf-8\n\xff\xfe\x00binary"
+
+    ReviewExecutionLogRecorder(review).write(ReviewExecutionLogChunk.STDOUT, output)
+
+    persisted = b"".join(review.execution_log_chunks.values_list("content", flat=True))
+    assert persisted == output
+
+
+def test_pipeline_marks_review_failed_when_log_setup_fails(
+    merge_request: MergeRequest, monkeypatch: Any
+) -> None:
+    """A logging storage error cannot leave a review permanently processing."""
+    AIProvider.objects.create(
+        name="logging-failure", provider_type=AIProvider.CUSTOM, model_name="mock", is_default=True
+    )
+    provider = Mock(estimate_cost=Mock(return_value=0))
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        AIProvider.CUSTOM,
+        lambda config: provider,
+    )
+    monkeypatch.setattr(
+        "apps.reviews.pipeline.ReviewExecutionLogRecorder",
+        Mock(side_effect=RuntimeError("log storage unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="log storage unavailable"):
+        ReviewPipeline().run_review(merge_request)
+
+    assert Review.objects.get(merge_request=merge_request).status == Review.FAILED
+    provider.review.assert_not_called()
 
 
 def test_pipeline_enforces_budget(merge_request: MergeRequest) -> None:
