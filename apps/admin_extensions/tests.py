@@ -226,6 +226,7 @@ class DashboardAccessTests(TestCase):
         detail = self.client.get(reverse("admin_extensions:review_detail", args=[review.pk]))
         log_url = reverse("admin_extensions:review_execution_log", args=[review.pk])
         log_response = self.client.get(log_url)
+        download_response = self.client.get(f"{log_url}?download=1")
 
         self.assertContains(detail, "Execution logs")
         self.assertContains(detail, log_url)
@@ -234,6 +235,10 @@ class DashboardAccessTests(TestCase):
         self.assertEqual(body, "[stdout]\nfirst chunk\n\n[stderr]\n<unsafe>second chunk")
         self.assertEqual(log_response["X-Content-Type-Options"], "nosniff")
         self.assertEqual(log_response["X-Frame-Options"], "SAMEORIGIN")
+        self.assertEqual(
+            download_response["Content-Disposition"],
+            f'attachment; filename="review-{review.pk}-execution.log"',
+        )
 
     def test_review_execution_log_requires_staff(self) -> None:
         """Review logs remain behind the same staff boundary as the dashboard."""

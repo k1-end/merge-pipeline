@@ -13,6 +13,7 @@ from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
 from apps.projects.models import MergeRequest, MRChange, Project
 from apps.reviews.models import AIProvider, Review, ReviewComment, ReviewExecutionLogChunk
+from apps.reviews.execution_logs import ReviewExecutionLogRecorder
 from apps.reviews.opencode_output import collect_assistant_text
 from apps.reviews.parsers import ReviewParseError, parse_review_response
 from apps.reviews.pipeline import BudgetExceededError, ReviewPipeline
@@ -384,6 +385,18 @@ def test_pipeline_persists_all_log_chunks_for_failed_review(
     assert "".join(chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT) == first
     assert "".join(chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDERR) == second
     assert len([chunk for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT]) == 2
+
+
+def test_execution_log_recorder_preserves_arbitrary_bytes(merge_request: MergeRequest) -> None:
+    """Provider bytes round-trip exactly without replacement decoding or truncation."""
+    provider = AIProvider.objects.create(name="binary", provider_type=AIProvider.CUSTOM, model_name="mock")
+    review = Review.objects.create(merge_request=merge_request, provider=provider)
+    output = b"valid utf-8\n\xff\xfe\x00binary"
+
+    ReviewExecutionLogRecorder(review).write(ReviewExecutionLogChunk.STDOUT, output)
+
+    persisted = b"".join(review.execution_log_chunks.values_list("content", flat=True))
+    assert persisted == output
 
 
 def test_pipeline_enforces_budget(merge_request: MergeRequest) -> None:
