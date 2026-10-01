@@ -88,14 +88,14 @@
           {% if selected_project or selected_author or selected_name or selected_status or selected_review_status %}<a href="{% url 'admin_extensions:merge_requests' %}" class="btn btn-label-secondary ms-2">Clear</a>{% endif %}
         </div>
       </form>
-      <form method="post" action="{% url 'admin_extensions:run_all_unreviewed_merge_requests' %}" onsubmit="return confirm('Queue AI reviews for all opened merge requests without a review?');">
+      <form method="post" action="{% url 'admin_extensions:run_filtered_merge_request_reviews' %}" onsubmit="return confirm('Queue AI reviews for all {{ merge_requests_page.paginator.count }} filtered merge requests?');">
         {% csrf_token %}
         {% if selected_project %}<input type="hidden" name="project" value="{{ selected_project }}">{% endif %}
         {% if selected_author %}<input type="hidden" name="author" value="{{ selected_author }}">{% endif %}
         {% if selected_name %}<input type="hidden" name="name" value="{{ selected_name }}">{% endif %}
         {% if selected_status %}<input type="hidden" name="status" value="{{ selected_status }}">{% endif %}
         {% if selected_review_status %}<input type="hidden" name="review_status" value="{{ selected_review_status }}">{% endif %}
-        <button type="submit" class="btn btn-label-primary"><i class="bx bx-bot me-1"></i>Review all unreviewed</button>
+        <button type="submit" class="btn btn-label-primary" {% if not merge_requests_page.paginator.count %}disabled{% endif %}><i class="bx bx-bot me-1"></i>Run AI reviews for filtered results</button>
       </form>
     </div>
   </div>

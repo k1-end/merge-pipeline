@@ -4,8 +4,10 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.paginator import Paginator
-from django.db.models import Exists, Max, OuterRef, Prefetch, Subquery
+from django.db.models import Max, OuterRef, Prefetch, Subquery
+from django.db.models.query import QuerySet
 from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http.request import QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.cache import never_cache
@@ -28,6 +30,48 @@ from apps.reviews.services import (
     ReviewQueueService,
 )
 from apps.sources.models import GitSource
+
+
+def _filtered_merge_requests(params: QueryDict) -> tuple[QuerySet[MergeRequest], dict[str, str]]:
+    """Return merge requests matching the filters used by the index page."""
+    selected = {
+        "project": params.get("project", ""),
+        "author": params.get("author", "").strip(),
+        "name": params.get("name", "").strip(),
+        "status": params.get("status", ""),
+        "review_status": params.get("review_status", ""),
+    }
+    latest_review_status = (
+        Review.objects.filter(merge_request=OuterRef("pk"))
+        .order_by("-created_at", "-id")
+        .values("status")[:1]
+    )
+    merge_requests = MergeRequest.objects.annotate(latest_review_status=Subquery(latest_review_status))
+
+    if selected["project"].isdigit():
+        merge_requests = merge_requests.filter(project_id=selected["project"])
+    elif selected["project"]:
+        merge_requests = merge_requests.none()
+    if selected["author"]:
+        merge_requests = merge_requests.filter(author_username__icontains=selected["author"])
+    if selected["name"]:
+        merge_requests = merge_requests.filter(title__icontains=selected["name"])
+
+    valid_statuses = dict(MergeRequest.STATE_CHOICES)
+    if selected["status"] in valid_statuses:
+        merge_requests = merge_requests.filter(state=selected["status"])
+    elif selected["status"]:
+        merge_requests = merge_requests.none()
+
+    valid_review_statuses = dict(Review.STATUSES)
+    if selected["review_status"] == "none":
+        merge_requests = merge_requests.filter(latest_review_status__isnull=True)
+    elif selected["review_status"] in valid_review_statuses:
+        merge_requests = merge_requests.filter(latest_review_status=selected["review_status"])
+    elif selected["review_status"]:
+        merge_requests = merge_requests.none()
+
+    return merge_requests, selected
 
 
 @staff_member_required(login_url="admin:login")
@@ -161,33 +205,12 @@ def post_merge_request_comments(request: HttpRequest, pk: int) -> HttpResponse:
 
 
 @staff_member_required(login_url="admin:login")
-def run_all_unreviewed_merge_requests(request: HttpRequest) -> HttpResponse:
-    """Queue reviews for all opened merge requests without review history."""
+def run_filtered_merge_request_reviews(request: HttpRequest) -> HttpResponse:
+    """Queue reviews for every merge request matching the submitted filters."""
     if request.method != "POST":
         return HttpResponse(status=405)
 
-    selected_project = request.POST.get("project", "")
-    selected_author = request.POST.get("author", "").strip()
-    selected_name = request.POST.get("name", "").strip()
-    selected_status = request.POST.get("status", "")
-    selected_review_status = request.POST.get("review_status", "")
-    merge_requests = (
-        MergeRequest.objects.filter(state=MergeRequest.OPENED)
-        .annotate(has_review=Exists(Review.objects.filter(merge_request=OuterRef("pk"))))
-        .filter(has_review=False)
-    )
-    if selected_project.isdigit():
-        merge_requests = merge_requests.filter(project_id=selected_project)
-    elif selected_project:
-        merge_requests = merge_requests.none()
-    if selected_author:
-        merge_requests = merge_requests.filter(author_username__icontains=selected_author)
-    if selected_name:
-        merge_requests = merge_requests.filter(title__icontains=selected_name)
-    if selected_status and selected_status != MergeRequest.OPENED:
-        merge_requests = merge_requests.none()
-    if selected_review_status and selected_review_status != "none":
-        merge_requests = merge_requests.none()
+    merge_requests, selected = _filtered_merge_requests(request.POST)
 
     queued = 0
     skipped = 0
@@ -205,17 +228,7 @@ def run_all_unreviewed_merge_requests(request: HttpRequest) -> HttpResponse:
     else:
         messages.success(request, f"Queued {queued} AI review(s).")
 
-    query_params = {
-        key: value
-        for key, value in (
-            ("project", selected_project),
-            ("author", selected_author),
-            ("name", selected_name),
-            ("status", selected_status),
-            ("review_status", selected_review_status),
-        )
-        if value
-    }
+    query_params = {key: value for key, value in selected.items() if value}
     redirect_url = reverse("admin_extensions:merge_requests")
     if query_params:
         redirect_url += "?" + urlencode(query_params)
@@ -351,19 +364,9 @@ def clone_project_cache(request: HttpRequest, pk: int) -> HttpResponse:
 @staff_member_required(login_url="admin:login")
 def merge_requests(request: HttpRequest) -> HttpResponse:
     """Render imported merge requests in the panel."""
-    selected_project = request.GET.get("project", "")
-    selected_author = request.GET.get("author", "").strip()
-    selected_name = request.GET.get("name", "").strip()
-    selected_status = request.GET.get("status", "")
-    selected_review_status = request.GET.get("review_status", "")
-    latest_review_status = (
-        Review.objects.filter(merge_request=OuterRef("pk"))
-        .order_by("-created_at", "-id")
-        .values("status")[:1]
-    )
+    merge_request_list, selected = _filtered_merge_requests(request.GET)
     merge_request_list = (
-        MergeRequest.objects.select_related("project", "project__source")
-        .annotate(latest_review_status=Subquery(latest_review_status))
+        merge_request_list.select_related("project", "project__source")
         .prefetch_related(
             Prefetch(
                 "reviews",
@@ -373,26 +376,6 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
         )
         .order_by("-external_updated_at", "-id")
     )
-    if selected_project.isdigit():
-        merge_request_list = merge_request_list.filter(project_id=selected_project)
-    elif selected_project:
-        merge_request_list = merge_request_list.none()
-    if selected_author:
-        merge_request_list = merge_request_list.filter(author_username__icontains=selected_author)
-    if selected_name:
-        merge_request_list = merge_request_list.filter(title__icontains=selected_name)
-    valid_statuses = dict(MergeRequest.STATE_CHOICES)
-    if selected_status in valid_statuses:
-        merge_request_list = merge_request_list.filter(state=selected_status)
-    elif selected_status:
-        merge_request_list = merge_request_list.none()
-    valid_review_statuses = dict(Review.STATUSES)
-    if selected_review_status == "none":
-        merge_request_list = merge_request_list.filter(latest_review_status__isnull=True)
-    elif selected_review_status in valid_review_statuses:
-        merge_request_list = merge_request_list.filter(latest_review_status=selected_review_status)
-    elif selected_review_status:
-        merge_request_list = merge_request_list.none()
 
     projects = Project.objects.order_by("full_name")
     merge_requests_page = Paginator(merge_request_list, 25).get_page(request.GET.get("page"))
@@ -407,11 +390,11 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
             "merge_requests": merge_requests_page,
             "merge_requests_page": merge_requests_page,
             "projects": projects,
-            "selected_project": selected_project,
-            "selected_author": selected_author,
-            "selected_name": selected_name,
-            "selected_status": selected_status,
-            "selected_review_status": selected_review_status,
+            "selected_project": selected["project"],
+            "selected_author": selected["author"],
+            "selected_name": selected["name"],
+            "selected_status": selected["status"],
+            "selected_review_status": selected["review_status"],
             "status_choices": MergeRequest.STATE_CHOICES,
             "review_status_choices": Review.STATUSES,
         },

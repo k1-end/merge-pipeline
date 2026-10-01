@@ -14,9 +14,9 @@ urlpatterns = [
     ),
     path("sync/", views.sync_merge_requests, name="sync_merge_requests"),
     path(
-        "merge-requests/review-all/",
-        views.run_all_unreviewed_merge_requests,
-        name="run_all_unreviewed_merge_requests",
+        "merge-requests/review-filtered/",
+        views.run_filtered_merge_request_reviews,
+        name="run_filtered_merge_request_reviews",
     ),
     path("merge-requests/<int:pk>/", views.merge_request_detail, name="merge_request_detail"),
     path("merge-requests/<int:pk>/review/", views.run_merge_request_review, name="run_merge_request_review"),

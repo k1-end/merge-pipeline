@@ -676,7 +676,7 @@ class DashboardAccessTests(TestCase):
         self.assertContains(response, ">+2<")
         self.assertContains(response, ">-1<")
         self.assertContains(response, "data-diff")
-        self.assertContains(response, "data-diff-action=\"expand\"")
+        self.assertContains(response, 'data-diff-action="expand"')
         self.assertContains(
             response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk])
         )
@@ -842,8 +842,12 @@ class DashboardAccessTests(TestCase):
             opened_at=timezone.now(),
             external_updated_at=timezone.now(),
         )
-        provider = AIProvider.objects.create(name="Comment model", provider_type=AIProvider.OPENAI, model_name="model")
-        review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED)
+        provider = AIProvider.objects.create(
+            name="Comment model", provider_type=AIProvider.OPENAI, model_name="model"
+        )
+        review = Review.objects.create(
+            merge_request=merge_request, provider=provider, status=Review.COMPLETED
+        )
         ReviewComment.objects.create(
             review=review, file_path="app.py", line_number=3, comment_type="issue", content="Fix this"
         )
@@ -853,7 +857,9 @@ class DashboardAccessTests(TestCase):
                 reverse("admin_extensions:post_merge_request_comments", args=[merge_request.pk])
             )
 
-        self.assertRedirects(response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]))
+        self.assertRedirects(
+            response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk])
+        )
         post_delay.assert_called_once_with(review.pk)
 
     def test_merge_request_comment_endpoint_rejects_get(self) -> None:
@@ -861,8 +867,8 @@ class DashboardAccessTests(TestCase):
         response = self.client.get(reverse("admin_extensions:post_merge_request_comments", args=[1]))
         self.assertEqual(response.status_code, 302)
 
-    def test_bulk_review_queues_only_opened_unreviewed_merge_requests(self) -> None:
-        """The bulk action excludes reviewed, draft, and closed merge requests."""
+    def test_bulk_review_queues_every_merge_request_matching_the_filters(self) -> None:
+        """The bulk action uses the exact filtered result set, regardless of state or review history."""
         user = get_user_model().objects.create_user(username="bulk-operator", password="test-password")
         user.is_staff = True
         user.save(update_fields=["is_staff"])
@@ -893,42 +899,100 @@ class DashboardAccessTests(TestCase):
                 external_updated_at=timezone.now(),
             )
 
-        queued_one = create_merge_request("101")
-        queued_two = create_merge_request("102")
-        reviewed = create_merge_request("103")
-        create_merge_request("104", MergeRequest.CLOSED)
-        create_merge_request("105", MergeRequest.DRAFT)
+        reviewed_closed = create_merge_request("101", MergeRequest.CLOSED)
+        create_merge_request("102", MergeRequest.CLOSED)
+        reviewed_opened = create_merge_request("103")
         provider = AIProvider.objects.create(
             name="Bulk review model", provider_type=AIProvider.OPENAI, model_name="reviewer"
         )
-        Review.objects.create(merge_request=reviewed, provider=provider, status=Review.COMPLETED)
+        Review.objects.create(merge_request=reviewed_closed, provider=provider, status=Review.COMPLETED)
+        Review.objects.create(merge_request=reviewed_opened, provider=provider, status=Review.COMPLETED)
 
         with patch(
             "apps.admin_extensions.views.ReviewQueueService.queue_manual_review", return_value="task-id"
         ) as queue_review:
-            response = self.client.post(reverse("admin_extensions:run_all_unreviewed_merge_requests"))
+            response = self.client.post(
+                reverse("admin_extensions:run_filtered_merge_request_reviews"),
+                {"status": MergeRequest.CLOSED, "review_status": Review.COMPLETED},
+            )
 
-        self.assertRedirects(response, reverse("admin_extensions:merge_requests"))
-        self.assertEqual(queue_review.call_count, 2)
-        self.assertCountEqual(
-            [call.args[0].pk for call in queue_review.call_args_list], [queued_one.pk, queued_two.pk]
+        self.assertRedirects(
+            response,
+            f"{reverse('admin_extensions:merge_requests')}?status=closed&review_status=completed",
         )
+        queue_review.assert_called_once()
+        self.assertEqual(queue_review.call_args.args[0].pk, reviewed_closed.pk)
         messages = list(response.wsgi_request._messages)
-        self.assertTrue(any("Queued 2 AI review(s)." in str(message) for message in messages))
+        self.assertTrue(any("Queued 1 AI review(s)." in str(message) for message in messages))
+
+    def test_merge_request_index_offers_review_action_for_all_filtered_pages(self) -> None:
+        """The filtered review action describes its full, unpaginated result set."""
+        user = get_user_model().objects.create_user(username="filtered-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="filtered-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="filtered-project",
+            name="api",
+            full_name="org/filtered-api",
+            web_url="https://github.com/org/filtered-api",
+        )
+        for index in range(26):
+            MergeRequest.objects.create(
+                project=project,
+                external_id=str(index),
+                external_iid=str(index),
+                title=f"Filtered request {index}",
+                state=MergeRequest.OPENED,
+                author_username="filtered-dev",
+                source_branch=f"feature/{index}",
+                target_branch="main",
+                web_url=f"https://github.com/org/filtered-api/pull/{index}",
+                opened_at=timezone.now(),
+                external_updated_at=timezone.now(),
+            )
+
+        response = self.client.get(
+            reverse("admin_extensions:merge_requests"),
+            {"project": project.pk, "author": "filtered-dev", "page": 2},
+        )
+
+        self.assertContains(
+            response,
+            f'action="{reverse("admin_extensions:run_filtered_merge_request_reviews")}"',
+        )
+        self.assertContains(response, "Run AI reviews for filtered results")
+        self.assertContains(response, "26 filtered merge requests")
+        self.assertNotContains(response, "Review all unreviewed")
 
         with patch(
             "apps.admin_extensions.views.ReviewQueueService.queue_manual_review", return_value="task-id"
-        ) as filtered_queue_review:
-            filtered_response = self.client.post(
-                reverse("admin_extensions:run_all_unreviewed_merge_requests"),
-                {"status": MergeRequest.CLOSED, "review_status": "none"},
+        ) as queue_review:
+            bulk_response = self.client.post(
+                reverse("admin_extensions:run_filtered_merge_request_reviews"),
+                {"project": str(project.pk), "author": "filtered-dev"},
             )
 
-        self.assertEqual(filtered_queue_review.call_count, 0)
+        self.assertEqual(queue_review.call_count, 26)
         self.assertRedirects(
-            filtered_response,
-            f"{reverse('admin_extensions:merge_requests')}?status=closed&review_status=none",
+            bulk_response,
+            f"{reverse('admin_extensions:merge_requests')}?project={project.pk}&author=filtered-dev",
         )
+
+    def test_filtered_review_endpoint_rejects_get(self) -> None:
+        """Filtered reviews cannot be triggered by following a link."""
+        user = get_user_model().objects.create_user(username="filtered-get", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("admin_extensions:run_filtered_merge_request_reviews"))
+
+        self.assertEqual(response.status_code, 405)
 
     def test_bulk_review_reports_skipped_merge_requests(self) -> None:
         """A configuration failure does not prevent other bulk reviews from being queued."""
@@ -966,7 +1030,7 @@ class DashboardAccessTests(TestCase):
             side_effect=["task-id", ReviewConfigurationError("No active AI provider is configured.")],
         ):
             response = self.client.post(
-                reverse("admin_extensions:run_all_unreviewed_merge_requests"),
+                reverse("admin_extensions:run_filtered_merge_request_reviews"),
                 {"project": str(project.pk)},
             )
 
