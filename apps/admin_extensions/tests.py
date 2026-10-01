@@ -217,10 +217,10 @@ class DashboardAccessTests(TestCase):
         )
         review = Review.objects.create(merge_request=merge_request, provider=provider)
         ReviewExecutionLogChunk.objects.create(
-            review=review, sequence=0, stream=ReviewExecutionLogChunk.STDOUT, content="first chunk\n"
+            review=review, sequence=0, stream=ReviewExecutionLogChunk.STDOUT, content=b"first chunk\n"
         )
         ReviewExecutionLogChunk.objects.create(
-            review=review, sequence=1, stream=ReviewExecutionLogChunk.STDERR, content="<unsafe>second chunk"
+            review=review, sequence=1, stream=ReviewExecutionLogChunk.STDERR, content=b"<unsafe>second chunk"
         )
 
         detail = self.client.get(reverse("admin_extensions:review_detail", args=[review.pk]))

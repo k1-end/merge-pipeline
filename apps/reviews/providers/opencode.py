@@ -2,12 +2,14 @@
 
 import os
 import subprocess
+import tempfile
 from time import monotonic
+from typing import BinaryIO
 
 from django.conf import settings
 
 from apps.reviews.models import ReviewExecutionLogChunk
-from apps.reviews.opencode_output import OpenCodeOutputError, collect_assistant_text
+from apps.reviews.opencode_output import OpenCodeOutputError, collect_assistant_result
 from apps.reviews.providers.base import BaseAIProvider, ProviderError, ReviewRequest, ReviewResponse
 
 
@@ -45,51 +47,55 @@ class OpenCodeProvider(BaseAIProvider):
                 f"(agent={settings.OPENCODE_AGENT}, model={self.config.model_name}, format=json)\n"
             ),
         )
-        try:
-            result = (
-                subprocess.run(  # noqa: S603 - executable and arguments are configured, never shell-evaluated
+        timed_out = False
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            try:
+                process = subprocess.Popen(  # noqa: S603 - arguments are configured, never shell-evaluated
                     command,
                     cwd=request.workspace_path,
                     env=environment,
-                    capture_output=True,
-                    text=True,
-                    timeout=settings.OPENCODE_TIMEOUT_SECONDS,
-                    check=False,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
                 )
-            )
-        except subprocess.TimeoutExpired as exc:
-            request.write_log(ReviewExecutionLogChunk.STDOUT, _output_text(exc.stdout))
-            request.write_log(ReviewExecutionLogChunk.STDERR, _output_text(exc.stderr))
+            except OSError as exc:
+                request.write_log(
+                    ReviewExecutionLogChunk.SYSTEM,
+                    f"OpenCode could not be started: {type(exc).__name__}\n",
+                )
+                raise ProviderError("OpenCode execution failed to start") from exc
+            try:
+                returncode = process.wait(timeout=settings.OPENCODE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+                returncode = process.wait()
+
+            _emit_file(stdout_file, ReviewExecutionLogChunk.STDOUT, request)
+            _emit_file(stderr_file, ReviewExecutionLogChunk.STDERR, request)
+            if timed_out:
+                request.write_log(
+                    ReviewExecutionLogChunk.SYSTEM,
+                    f"OpenCode timed out after {settings.OPENCODE_TIMEOUT_SECONDS} seconds\n",
+                )
+                raise ProviderError("OpenCode execution timed out")
             request.write_log(
                 ReviewExecutionLogChunk.SYSTEM,
-                f"OpenCode timed out after {settings.OPENCODE_TIMEOUT_SECONDS} seconds\n",
+                f"OpenCode exited with code {returncode}\n",
             )
-            raise ProviderError("OpenCode execution timed out") from exc
-        except OSError as exc:
-            request.write_log(
-                ReviewExecutionLogChunk.SYSTEM,
-                f"OpenCode could not be started: {type(exc).__name__}\n",
-            )
-            raise ProviderError("OpenCode execution failed to start") from exc
-        request.write_log(ReviewExecutionLogChunk.STDOUT, result.stdout)
-        request.write_log(ReviewExecutionLogChunk.STDERR, result.stderr)
-        request.write_log(
-            ReviewExecutionLogChunk.SYSTEM,
-            f"OpenCode exited with code {result.returncode}\n",
-        )
-        if result.returncode != 0:
-            raise ProviderError(f"OpenCode execution failed with exit code {result.returncode}")
-        try:
-            content, events = collect_assistant_text(result.stdout)
-        except OpenCodeOutputError as exc:
-            raise ProviderError(str(exc)) from exc
-        usage = _usage(events)
+            if returncode != 0:
+                raise ProviderError(f"OpenCode execution failed with exit code {returncode}")
+            stdout_file.seek(0)
+            try:
+                lines = (line.decode("utf-8") for line in stdout_file)
+                content, event_count, input_tokens, output_tokens = collect_assistant_result(lines)
+            except (OpenCodeOutputError, UnicodeDecodeError) as exc:
+                raise ProviderError(str(exc)) from exc
         return ReviewResponse(
             content,
             [],
-            {"event_count": len(events)},
-            usage[0],
-            usage[1],
+            {"event_count": event_count},
+            input_tokens,
+            output_tokens,
             0,
             int((monotonic() - started) * 1000),
         )
@@ -119,28 +125,8 @@ class OpenCodeProvider(BaseAIProvider):
         )
 
 
-def _usage(events: list[dict]) -> tuple[int, int]:
-    """Extract token counts when OpenCode exposes them in event properties."""
-    input_tokens = output_tokens = 0
-    for event in events:
-        properties = event.get("properties", event)
-        if not isinstance(properties, dict):
-            continue
-        usage = properties.get("usage", properties)
-        if isinstance(usage, dict):
-            input_tokens = int(
-                usage.get("input_tokens", usage.get("prompt_tokens", input_tokens)) or input_tokens
-            )
-            output_tokens = int(
-                usage.get("output_tokens", usage.get("completion_tokens", output_tokens)) or output_tokens
-            )
-    return input_tokens, output_tokens
-
-
-def _output_text(output: str | bytes | None) -> str:
-    """Normalize partial timeout output without dropping undecodable bytes."""
-    if output is None:
-        return ""
-    if isinstance(output, bytes):
-        return output.decode(errors="replace")
-    return output
+def _emit_file(file: BinaryIO, stream: str, request: ReviewRequest) -> None:
+    """Persist a spooled process stream in bounded, lossless chunks."""
+    file.seek(0)
+    while chunk := file.read(ReviewExecutionLogChunk.CHUNK_SIZE):
+        request.write_log(stream, chunk)

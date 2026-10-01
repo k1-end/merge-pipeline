@@ -25,9 +25,9 @@ class ReviewRequest:
     base_sha: str = ""
     head_sha: str = ""
     merge_base_sha: str = ""
-    log_handler: Callable[[str, str], None] | None = None
+    log_handler: Callable[[str, str | bytes], None] | None = None
 
-    def write_log(self, stream: str, content: str) -> None:
+    def write_log(self, stream: str, content: str | bytes) -> None:
         """Send complete provider output to the review's persistent log recorder."""
         if self.log_handler is not None and content:
             self.log_handler(stream, content)

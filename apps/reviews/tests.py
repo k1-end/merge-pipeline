@@ -12,8 +12,8 @@ from cryptography.fernet import Fernet
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
 from apps.projects.models import MergeRequest, MRChange, Project
-from apps.reviews.models import AIProvider, Review, ReviewComment, ReviewExecutionLogChunk
 from apps.reviews.execution_logs import ReviewExecutionLogRecorder
+from apps.reviews.models import AIProvider, Review, ReviewComment, ReviewExecutionLogChunk
 from apps.reviews.opencode_output import collect_assistant_text
 from apps.reviews.parsers import ReviewParseError, parse_review_response
 from apps.reviews.pipeline import BudgetExceededError, ReviewPipeline
@@ -33,6 +33,19 @@ from apps.reviews.services import (
 from apps.reviews.tasks import _raise_or_retry_missing_cache
 from apps.reviews.workspaces import ReviewWorkspace
 from apps.sources.models import GitSource
+
+
+def popen_mock(stdout: bytes, stderr: bytes, returncode: int) -> Mock:
+    """Build a Popen mock that writes bytes to the supplied spool files."""
+    process = Mock()
+    process.wait.return_value = returncode
+
+    def create(*args: Any, **kwargs: Any) -> Mock:
+        kwargs["stdout"].write(stdout)
+        kwargs["stderr"].write(stderr)
+        return process
+
+    return Mock(side_effect=create)
 
 
 def run_git(cwd: Path, *arguments: str) -> None:
@@ -118,13 +131,12 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
     settings.OPENCODE_AGENT = "review"
     settings.OPENCODE_TIMEOUT_SECONDS = 30
     settings.OPENCODE_MAX_OUTPUT_BYTES = 100_000
-    completed = Mock(
-        returncode=0,
-        stdout='{"type":"text","text":"{\\"summary\\":\\"ok\\",\\"findings\\":[]}"}\n',
-        stderr="",
+    popen = popen_mock(
+        b'{"type":"text","text":"{\\"summary\\":\\"ok\\",\\"findings\\":[]}"}\n',
+        b"",
+        0,
     )
-    run = Mock(return_value=completed)
-    monkeypatch.setattr("apps.reviews.providers.opencode.subprocess.run", run)
+    monkeypatch.setattr("apps.reviews.providers.opencode.subprocess.Popen", popen)
     config = AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
     response = OpenCodeProvider(config).review(
         ReviewRequest(
@@ -142,7 +154,7 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
         )
     )
     assert response.summary == '{"summary":"ok","findings":[]}'
-    command = run.call_args.args[0]
+    command = popen.call_args.args[0]
     assert command[:8] == [
         "opencode",
         "run",
@@ -167,10 +179,10 @@ def test_opencode_provider_emits_complete_untruncated_output(
     stdout = '{"type":"text","text":"{\\"summary\\":\\"ok\\",\\"findings\\":[]}"}\n'
     stderr = "diagnostic-" * 1000
     monkeypatch.setattr(
-        "apps.reviews.providers.opencode.subprocess.run",
-        Mock(return_value=Mock(returncode=0, stdout=stdout, stderr=stderr)),
+        "apps.reviews.providers.opencode.subprocess.Popen",
+        popen_mock(stdout.encode(), stderr.encode(), 0),
     )
-    captured: list[tuple[str, str]] = []
+    captured: list[tuple[str, str | bytes]] = []
     request = ReviewRequest(
         "Fix",
         "",
@@ -185,8 +197,8 @@ def test_opencode_provider_emits_complete_untruncated_output(
         AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
     ).review(request)
 
-    assert (ReviewExecutionLogChunk.STDOUT, stdout) in captured
-    assert (ReviewExecutionLogChunk.STDERR, stderr) in captured
+    assert (ReviewExecutionLogChunk.STDOUT, stdout.encode()) in captured
+    assert (ReviewExecutionLogChunk.STDERR, stderr.encode()) in captured
 
 
 def test_opencode_provider_emits_output_before_nonzero_exit(
@@ -197,10 +209,10 @@ def test_opencode_provider_emits_output_before_nonzero_exit(
     settings.OPENCODE_AGENT = "review"
     settings.OPENCODE_TIMEOUT_SECONDS = 30
     monkeypatch.setattr(
-        "apps.reviews.providers.opencode.subprocess.run",
-        Mock(return_value=Mock(returncode=9, stdout="partial output", stderr="fatal detail")),
+        "apps.reviews.providers.opencode.subprocess.Popen",
+        popen_mock(b"partial output", b"fatal detail", 9),
     )
-    captured: list[tuple[str, str]] = []
+    captured: list[tuple[str, str | bytes]] = []
     request = ReviewRequest(
         "Fix",
         "",
@@ -216,8 +228,8 @@ def test_opencode_provider_emits_output_before_nonzero_exit(
             AIProvider(name="opencode", provider_type=AIProvider.OPENCODE, model_name="opencode/test")
         ).review(request)
 
-    assert (ReviewExecutionLogChunk.STDOUT, "partial output") in captured
-    assert (ReviewExecutionLogChunk.STDERR, "fatal detail") in captured
+    assert (ReviewExecutionLogChunk.STDOUT, b"partial output") in captured
+    assert (ReviewExecutionLogChunk.STDERR, b"fatal detail") in captured
 
 
 def test_manual_review_queue_rejects_active_duplicate(merge_request: MergeRequest) -> None:
@@ -340,12 +352,12 @@ def test_pipeline_persists_structured_review(
     review = ReviewPipeline().run_review(merge_request)
     assert review.status == Review.COMPLETED
     assert ReviewComment.objects.get(review=review).content == "Bad path"
-    provider_log = "".join(
+    provider_log = b"".join(
         review.execution_log_chunks.filter(
             stream=ReviewExecutionLogChunk.PROVIDER
         ).values_list("content", flat=True)
     )
-    assert '"ok": true' in provider_log
+    assert b'"ok": true' in provider_log
 
 
 def test_pipeline_persists_all_log_chunks_for_failed_review(
@@ -382,8 +394,12 @@ def test_pipeline_persists_all_log_chunks_for_failed_review(
     review = Review.objects.get(merge_request=merge_request)
     assert review.status == Review.FAILED
     chunks = list(review.execution_log_chunks.order_by("sequence"))
-    assert "".join(chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT) == first
-    assert "".join(chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDERR) == second
+    assert b"".join(
+        chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT
+    ) == first.encode()
+    assert b"".join(
+        chunk.content for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDERR
+    ) == second.encode()
     assert len([chunk for chunk in chunks if chunk.stream == ReviewExecutionLogChunk.STDOUT]) == 2
 
 

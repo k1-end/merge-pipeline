@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.paginator import Paginator
-from django.db.models import Exists, OuterRef, Prefetch
+from django.db.models import Exists, Max, OuterRef, Prefetch
 from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -393,15 +393,27 @@ def review_execution_log(request: HttpRequest, pk: int) -> StreamingHttpResponse
     """Stream every provider log chunk in write order without loading the full log."""
     review = get_object_or_404(Review, pk=pk)
 
-    def content() -> Iterator[str]:
+    def content() -> Iterator[bytes]:
         current_stream = None
-        chunks = review.execution_log_chunks.order_by("sequence").values_list("stream", "content")
-        for stream, chunk in chunks.iterator():
-            if stream != current_stream:
-                separator = "" if current_stream is None else "\n"
-                yield f"{separator}[{stream}]\n"
-                current_stream = stream
-            yield chunk
+        last_sequence = -1
+        maximum = review.execution_log_chunks.aggregate(value=Max("sequence"))["value"]
+        while maximum is not None and last_sequence < maximum:
+            batch = list(
+                review.execution_log_chunks.filter(
+                    sequence__gt=last_sequence, sequence__lte=maximum
+                )
+                .order_by("sequence")
+                .values_list("sequence", "stream", "content")[:500]
+            )
+            if not batch:
+                break
+            for sequence, stream, chunk in batch:
+                if stream != current_stream:
+                    separator = b"" if current_stream is None else b"\n"
+                    yield separator + f"[{stream}]\n".encode()
+                    current_stream = stream
+                yield bytes(chunk)
+                last_sequence = sequence
 
     response = StreamingHttpResponse(content(), content_type="text/plain; charset=utf-8")
     response["X-Content-Type-Options"] = "nosniff"

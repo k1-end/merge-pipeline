@@ -108,7 +108,7 @@ class ReviewExecutionLogChunk(TimestampedModel):
     review = models.ForeignKey(Review, on_delete=models.CASCADE, related_name="execution_log_chunks")
     sequence = models.PositiveBigIntegerField()
     stream = models.CharField(max_length=20, choices=STREAMS)
-    content = models.TextField()
+    content = models.BinaryField()
 
     class Meta:
         """Keep chunks in their original write order without imposing a total size limit."""
@@ -117,4 +117,3 @@ class ReviewExecutionLogChunk(TimestampedModel):
         constraints = [
             models.UniqueConstraint(fields=["review", "sequence"], name="review_log_chunk_sequence_unique")
         ]
-        indexes = [models.Index(fields=["review", "sequence"])]
