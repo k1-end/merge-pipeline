@@ -6,6 +6,7 @@ app_name = "admin_extensions"
 
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
+    path("queue-status/", views.queue_status, name="queue_status"),
     path("sync/", views.sync_merge_requests, name="sync_merge_requests"),
     path(
         "merge-requests/review-all/",
