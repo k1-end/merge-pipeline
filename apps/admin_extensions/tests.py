@@ -219,8 +219,22 @@ class DashboardAccessTests(TestCase):
         ReviewExecutionLogChunk.objects.create(
             review=review, sequence=0, stream=ReviewExecutionLogChunk.STDOUT, content=b"first chunk\n"
         )
+        ReviewExecutionLogChunk.objects.bulk_create(
+            [
+                ReviewExecutionLogChunk(
+                    review=review,
+                    sequence=sequence,
+                    stream=ReviewExecutionLogChunk.STDOUT,
+                    content=b"x",
+                )
+                for sequence in range(1, 501)
+            ]
+        )
         ReviewExecutionLogChunk.objects.create(
-            review=review, sequence=1, stream=ReviewExecutionLogChunk.STDERR, content=b"<unsafe>second chunk"
+            review=review,
+            sequence=501,
+            stream=ReviewExecutionLogChunk.STDERR,
+            content=b"<unsafe>second chunk",
         )
 
         detail = self.client.get(reverse("admin_extensions:review_detail", args=[review.pk]))
@@ -232,9 +246,12 @@ class DashboardAccessTests(TestCase):
         self.assertContains(detail, log_url)
         self.assertEqual(log_response.status_code, 200)
         body = b"".join(log_response.streaming_content).decode()
-        self.assertEqual(body, "[stdout]\nfirst chunk\n\n[stderr]\n<unsafe>second chunk")
+        expected = f"[stdout]\nfirst chunk\n{'x' * 500}\n[stderr]\n<unsafe>second chunk"
+        self.assertEqual(body, expected)
+        self.assertEqual(b"".join(download_response.streaming_content).decode(), expected)
         self.assertEqual(log_response["X-Content-Type-Options"], "nosniff")
         self.assertEqual(log_response["X-Frame-Options"], "SAMEORIGIN")
+        self.assertIn("no-store", log_response["Cache-Control"])
         self.assertEqual(
             download_response["Content-Disposition"],
             f'attachment; filename="review-{review.pk}-execution.log"',

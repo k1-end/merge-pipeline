@@ -415,6 +415,31 @@ def test_execution_log_recorder_preserves_arbitrary_bytes(merge_request: MergeRe
     assert persisted == output
 
 
+def test_pipeline_marks_review_failed_when_log_setup_fails(
+    merge_request: MergeRequest, monkeypatch: Any
+) -> None:
+    """A logging storage error cannot leave a review permanently processing."""
+    AIProvider.objects.create(
+        name="logging-failure", provider_type=AIProvider.CUSTOM, model_name="mock", is_default=True
+    )
+    provider = Mock(estimate_cost=Mock(return_value=0))
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        AIProvider.CUSTOM,
+        lambda config: provider,
+    )
+    monkeypatch.setattr(
+        "apps.reviews.pipeline.ReviewExecutionLogRecorder",
+        Mock(side_effect=RuntimeError("log storage unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="log storage unavailable"):
+        ReviewPipeline().run_review(merge_request)
+
+    assert Review.objects.get(merge_request=merge_request).status == Review.FAILED
+    provider.review.assert_not_called()
+
+
 def test_pipeline_enforces_budget(merge_request: MergeRequest) -> None:
     """Expensive requests are rejected before a provider call."""
     AIProvider.objects.create(
