@@ -2,11 +2,12 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.admin_extensions.queue_status import get_queue_snapshot
+from apps.admin_extensions.queue_status import get_cached_queue_snapshot, get_queue_snapshot
 from apps.projects.models import MergeRequest, Project
 from apps.sources.models import GitSource
 
@@ -14,6 +15,7 @@ from apps.sources.models import GitSource
 class QueueSnapshotTests(TestCase):
     def setUp(self) -> None:
         """Create project records used to resolve safe task targets."""
+        cache.clear()
         source = GitSource.objects.create(
             name="GitHub", source_type=GitSource.GITHUB, base_url="https://api.github.com"
         )
@@ -94,6 +96,18 @@ class QueueSnapshotTests(TestCase):
         self.assertEqual(snapshot["counts"], {"workers": 0, "running": 0, "waiting": 0, "scheduled": 0})
         self.assertEqual(snapshot["jobs"], [])
 
+    @patch("apps.admin_extensions.queue_status.get_queue_snapshot")
+    def test_cached_snapshot_coalesces_repeated_dashboard_polls(self, collect: MagicMock) -> None:
+        """Tabs polling together reuse one recent Celery inspection result."""
+        collect.return_value = {"health": "online"}
+
+        first = get_cached_queue_snapshot()
+        second = get_cached_queue_snapshot()
+
+        self.assertEqual(first, {"health": "online"})
+        self.assertEqual(second, first)
+        collect.assert_called_once_with()
+
 
 class QueueStatusEndpointTests(TestCase):
     def setUp(self) -> None:
@@ -134,3 +148,4 @@ class QueueStatusEndpointTests(TestCase):
 
         self.assertContains(response, "Queue status")
         self.assertContains(response, reverse("admin_extensions:queue_status"))
+        self.assertContains(response, "AbortController")
