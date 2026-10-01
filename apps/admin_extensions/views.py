@@ -32,13 +32,15 @@ from apps.reviews.services import (
 from apps.sources.models import GitSource
 
 
-def _filtered_merge_requests(params: QueryDict) -> tuple[QuerySet[MergeRequest], dict[str, str]]:
+def _filtered_merge_requests(
+    params: QueryDict, *, default_status: str = ""
+) -> tuple[QuerySet[MergeRequest], dict[str, str]]:
     """Return merge requests matching the filters used by the index page."""
     selected = {
         "project": params.get("project", ""),
         "author": params.get("author", "").strip(),
         "name": params.get("name", "").strip(),
-        "status": params.get("status", ""),
+        "status": params.get("status", default_status),
         "review_status": params.get("review_status", ""),
     }
     latest_review_status = (
@@ -364,7 +366,7 @@ def clone_project_cache(request: HttpRequest, pk: int) -> HttpResponse:
 @staff_member_required(login_url="admin:login")
 def merge_requests(request: HttpRequest) -> HttpResponse:
     """Render imported merge requests in the panel."""
-    merge_request_list, selected = _filtered_merge_requests(request.GET)
+    merge_request_list, selected = _filtered_merge_requests(request.GET, default_status=MergeRequest.OPENED)
     merge_request_list = (
         merge_request_list.select_related("project", "project__source")
         .prefetch_related(

@@ -62,7 +62,7 @@
         </div>
         <div class="col-12 col-md-4 col-xl-2">
           <label for="status-filter" class="form-label">MR status</label>
-          <select id="status-filter" name="status" class="form-select">
+          <select id="status-filter" name="status" class="form-select" data-selected-status="{{ selected_status }}">
             <option value="">All statuses</option>
             {% for value, label in status_choices %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
           </select>
@@ -117,6 +117,13 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/choices.js@11.1.0/public/assets/scripts/choices.min.js"></script>
 <script>
+  const statusFilter = document.getElementById('status-filter');
+  const restoreSelectedStatus = () => {
+    statusFilter.value = statusFilter.dataset.selectedStatus;
+  };
+  restoreSelectedStatus();
+  window.addEventListener('pageshow', restoreSelectedStatus);
+
   new Choices('#project-filter', {
     searchEnabled: true,
     searchPlaceholderValue: 'Search projects...',

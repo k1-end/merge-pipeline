@@ -552,6 +552,55 @@ class DashboardAccessTests(TestCase):
         )
         self.assertEqual(len(invalid_response.context["merge_requests"].object_list), 0)
 
+    def test_merge_request_index_defaults_to_open_but_allows_all_statuses(self) -> None:
+        """The initial index shows open requests while an explicit blank status shows every state."""
+        user = get_user_model().objects.create_user(username="default-status", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="default-status-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="default-status-project",
+            name="web",
+            full_name="org/web",
+            web_url="https://github.com/org/web",
+        )
+        for external_id, title, state in (
+            ("default-open", "Open request", MergeRequest.OPENED),
+            ("default-merged", "Merged request", MergeRequest.MERGED),
+        ):
+            MergeRequest.objects.create(
+                project=project,
+                external_id=external_id,
+                external_iid=external_id,
+                title=title,
+                state=state,
+                author_username="dev",
+                source_branch=f"feature/{external_id}",
+                target_branch="main",
+                web_url=f"https://github.com/org/web/pull/{external_id}",
+                opened_at=timezone.now(),
+                external_updated_at=timezone.now(),
+            )
+
+        default_response = self.client.get(reverse("admin_extensions:merge_requests"))
+
+        self.assertContains(default_response, "Open request")
+        self.assertNotContains(default_response, "Merged request")
+        self.assertContains(default_response, f'value="{MergeRequest.OPENED}" selected')
+        self.assertContains(
+            default_response,
+            f'data-selected-status="{MergeRequest.OPENED}"',
+        )
+
+        all_statuses_response = self.client.get(reverse("admin_extensions:merge_requests"), {"status": ""})
+
+        self.assertContains(all_statuses_response, "Open request")
+        self.assertContains(all_statuses_response, "Merged request")
+
     def test_merge_request_index_paginates_and_preserves_project_filter(self) -> None:
         user = get_user_model().objects.create_user(username="merge-request-pages", password="test-password")
         user.is_staff = True
