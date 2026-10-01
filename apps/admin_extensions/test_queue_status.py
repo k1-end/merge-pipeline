@@ -107,7 +107,7 @@ class QueueStatusEndpointTests(TestCase):
         response = self.client.get(reverse("admin_extensions:queue_status"))
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn(reverse("admin:login"), response.url)
+        self.assertIn(reverse("admin:login"), response.headers["Location"])
 
     @patch("apps.admin_extensions.views.get_queue_snapshot")
     def test_staff_users_receive_queue_snapshot(self, snapshot: MagicMock) -> None:

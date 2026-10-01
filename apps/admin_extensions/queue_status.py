@@ -4,7 +4,7 @@ import ast
 import json
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from django.conf import settings
 from django.utils import timezone
@@ -40,7 +40,7 @@ def _broker_queue_depth() -> int:
         socket_timeout=0.5,
     )
     try:
-        return int(client.llen(queue_name))
+        return cast(int, client.llen(queue_name))
     finally:
         client.close()
 
