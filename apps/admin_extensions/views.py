@@ -8,6 +8,7 @@ from django.db.models import Exists, Max, OuterRef, Prefetch
 from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.views.decorators.cache import never_cache
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 
 from apps.admin_extensions.forms import ProviderForm, SourceForm
@@ -388,6 +389,7 @@ def review_detail(request: HttpRequest, pk: int) -> HttpResponse:
 
 
 @staff_member_required(login_url="admin:login")
+@never_cache
 @xframe_options_sameorigin
 def review_execution_log(request: HttpRequest, pk: int) -> StreamingHttpResponse:
     """Stream every provider log chunk in write order without loading the full log."""

@@ -128,5 +128,6 @@ class OpenCodeProvider(BaseAIProvider):
 def _emit_file(file: BinaryIO, stream: str, request: ReviewRequest) -> None:
     """Persist a spooled process stream in bounded, lossless chunks."""
     file.seek(0)
-    while chunk := file.read(ReviewExecutionLogChunk.CHUNK_SIZE):
+    batch_size = ReviewExecutionLogChunk.CHUNK_SIZE * 100
+    while chunk := file.read(batch_size):
         request.write_log(stream, chunk)

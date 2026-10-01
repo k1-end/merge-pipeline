@@ -1,6 +1,7 @@
 """Cost-aware review orchestration."""
 
 import json
+import logging
 from contextlib import nullcontext
 from time import monotonic
 
@@ -17,6 +18,7 @@ from apps.reviews.workspaces import ReviewWorkspace
 
 DEFAULT_SYSTEM_PROMPT = "You are a careful senior code reviewer. Return only JSON with summary and findings."
 DEFAULT_REVIEW_PROMPT = "Review this change.\nTitle: {title}\nDescription: {description}\nChanges:\n{changes}"
+logger = logging.getLogger(__name__)
 
 
 class BudgetExceededError(RuntimeError):
@@ -55,14 +57,15 @@ class ReviewPipeline:
         if provider.estimate_cost(request) > self.budget_limit:
             raise BudgetExceededError("Review exceeds configured budget")
         review = Review.objects.create(merge_request=mr, provider=provider_config, status=Review.PROCESSING)
-        log_recorder = ReviewExecutionLogRecorder(review)
-        request.log_handler = log_recorder.write
-        log_recorder.write(
-            "system",
-            f"Starting provider {provider_config.provider_type} with model {provider_config.model_name}\n",
-        )
         started = monotonic()
+        log_recorder = None
         try:
+            log_recorder = ReviewExecutionLogRecorder(review)
+            request.log_handler = log_recorder.write
+            log_recorder.write(
+                "system",
+                f"Starting provider {provider_config.provider_type} with model {provider_config.model_name}\n",
+            )
             workspace = (
                 ReviewWorkspace(mr.project, mr.source_branch, mr.target_branch)
                 if provider_config.provider_type == AIProvider.OPENCODE
@@ -97,7 +100,11 @@ class ReviewPipeline:
                     [ReviewComment(review=review, **finding) for finding in findings]
                 )
         except Exception as exc:
-            log_recorder.write("system", f"Review failed: {type(exc).__name__}: {exc}\n")
+            if log_recorder is not None:
+                try:
+                    log_recorder.write("system", f"Review failed: {type(exc).__name__}: {exc}\n")
+                except Exception:  # noqa: BLE001 - log storage must not block status persistence
+                    logger.exception("Could not persist the final review failure log", extra={"review_id": review.pk})
             review.status = Review.FAILED
             review.error_message = str(exc)
             review.duration_ms = int((monotonic() - started) * 1000)
