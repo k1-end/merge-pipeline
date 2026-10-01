@@ -123,7 +123,7 @@ class QueueStatusEndpointTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse("admin:login"), response.headers["Location"])
 
-    @patch("apps.admin_extensions.views.get_queue_snapshot")
+    @patch("apps.admin_extensions.views.get_cached_queue_snapshot")
     def test_staff_users_receive_queue_snapshot(self, snapshot: MagicMock) -> None:
         """The endpoint returns a fresh queue snapshot without browser caching."""
         snapshot.return_value = {

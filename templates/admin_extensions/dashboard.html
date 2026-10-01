@@ -138,13 +138,19 @@
     async function refresh() {
       if (requestInFlight || document.hidden) return;
       requestInFlight = true;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 4000);
       try {
-        const response = await fetch(panel.dataset.statusUrl, { headers: { Accept: 'application/json' } });
+        const response = await fetch(panel.dataset.statusUrl, {
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        });
         if (!response.ok) throw new Error(`Queue status returned ${response.status}`);
         render(await response.json());
       } catch (_error) {
         renderUnavailable();
       } finally {
+        window.clearTimeout(timeout);
         requestInFlight = false;
       }
     }

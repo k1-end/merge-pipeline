@@ -9,7 +9,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from apps.admin_extensions.forms import ProviderForm, SourceForm
-from apps.admin_extensions.queue_status import get_queue_snapshot
+from apps.admin_extensions.queue_status import get_cached_queue_snapshot
 from apps.projects.models import MergeRequest, Project, RemoteMRComment, RemoteMRReview
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.repository_cache import RepositoryCache
@@ -55,7 +55,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 @staff_member_required(login_url="admin:login")
 def queue_status(request: HttpRequest) -> JsonResponse:
     """Return a live, read-only Celery queue snapshot for the dashboard."""
-    response = JsonResponse(get_queue_snapshot())
+    response = JsonResponse(get_cached_queue_snapshot())
     response["Cache-Control"] = "no-store"
     return response
 

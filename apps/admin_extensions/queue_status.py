@@ -4,9 +4,11 @@ import ast
 import json
 from collections.abc import Callable
 from datetime import datetime
+from threading import Lock
 from typing import Any, cast
 
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 from redis import Redis
 
@@ -14,6 +16,9 @@ from config.celery import app as celery_app
 
 TaskPayload = dict[str, Any]
 WorkerTasks = dict[str, list[TaskPayload]]
+
+_SNAPSHOT_CACHE_KEY = "admin_extensions:queue_status:v1"
+_snapshot_lock = Lock()
 
 _TASK_DETAILS: dict[str, tuple[str, str | None]] = {
     "apps.reviews.tasks.clone_repository_cache": ("Clone repository cache", "project"),
@@ -225,3 +230,19 @@ def get_queue_snapshot() -> dict[str, Any]:
         "jobs": jobs,
         "updated_at": now.isoformat(),
     }
+
+
+def get_cached_queue_snapshot() -> dict[str, Any]:
+    """Coalesce nearby dashboard polls into one infrastructure inspection."""
+    cached = cache.get(_SNAPSHOT_CACHE_KEY)
+    if isinstance(cached, dict):
+        return cached
+
+    with _snapshot_lock:
+        cached = cache.get(_SNAPSHOT_CACHE_KEY)
+        if isinstance(cached, dict):
+            return cached
+        snapshot = get_queue_snapshot()
+        timeout = getattr(settings, "QUEUE_STATUS_CACHE_SECONDS", 3)
+        cache.set(_SNAPSHOT_CACHE_KEY, snapshot, timeout=timeout)
+        return snapshot
