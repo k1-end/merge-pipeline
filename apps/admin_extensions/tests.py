@@ -87,6 +87,132 @@ class DashboardAccessTests(TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertContains(response, heading)
 
+    def test_project_management_links_stay_inside_panel(self) -> None:
+        user = get_user_model().objects.create_user(username="project-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="project-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="project-1",
+            name="web",
+            full_name="org/web",
+            web_url="https://github.com/org/web",
+        )
+
+        dashboard_response = self.client.get(reverse("admin_extensions:dashboard"))
+        projects_response = self.client.get(reverse("admin_extensions:projects"))
+
+        self.assertContains(dashboard_response, reverse("admin_extensions:projects"))
+        self.assertNotContains(dashboard_response, reverse("admin:projects_project_changelist"))
+        self.assertContains(projects_response, reverse("admin_extensions:project_edit", args=[project.pk]))
+        self.assertNotContains(projects_response, reverse("admin:projects_project_change", args=[project.pk]))
+
+    def test_staff_users_can_edit_projects_inside_panel(self) -> None:
+        user = get_user_model().objects.create_user(username="project-editor", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="editable-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        provider = AIProvider.objects.create(
+            name="Project review model",
+            provider_type=AIProvider.OPENAI,
+            model_name="gpt-4o-mini",
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="editable-project",
+            name="api",
+            full_name="org/api",
+            web_url="https://github.com/org/api",
+        )
+
+        edit_url = reverse("admin_extensions:project_edit", args=[project.pk])
+        get_response = self.client.get(edit_url)
+        post_response = self.client.post(
+            edit_url,
+            {
+                "source": source.pk,
+                "external_id": project.external_id,
+                "name": project.name,
+                "full_name": project.full_name,
+                "web_url": project.web_url,
+                "clone_url": "https://github.com/org/api.git",
+                "default_branch": "develop",
+                "is_active": "on",
+                "auto_review_enabled": "on",
+                "review_on_draft": "on",
+                "ai_provider": provider.pk,
+            },
+        )
+
+        self.assertEqual(get_response.status_code, 200)
+        self.assertContains(get_response, "Edit project")
+        self.assertRedirects(post_response, reverse("admin_extensions:projects"))
+        project.refresh_from_db()
+        self.assertEqual(project.default_branch, "develop")
+        self.assertEqual(project.ai_provider, provider)
+        self.assertTrue(project.auto_review_enabled)
+        self.assertTrue(project.review_on_draft)
+
+    def test_project_edit_requires_staff_access(self) -> None:
+        source = GitSource.objects.create(
+            name="protected-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="protected-project",
+            name="protected",
+            full_name="org/protected",
+            web_url="https://github.com/org/protected",
+        )
+        edit_url = reverse("admin_extensions:project_edit", args=[project.pk])
+
+        response = self.client.get(edit_url)
+
+        self.assertRedirects(response, f"{reverse('admin:login')}?next={edit_url}")
+
+    def test_invalid_project_edit_stays_in_panel_without_saving(self) -> None:
+        user = get_user_model().objects.create_user(username="project-validator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="validation-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="validation-project",
+            name="api",
+            full_name="org/api",
+            web_url="https://github.com/org/api",
+        )
+
+        response = self.client.post(
+            reverse("admin_extensions:project_edit", args=[project.pk]),
+            {
+                "source": source.pk,
+                "external_id": project.external_id,
+                "name": project.name,
+                "full_name": "",
+                "web_url": project.web_url,
+                "clone_url": "",
+                "default_branch": "develop",
+                "is_active": "on",
+                "ai_provider": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "This field is required.")
+        project.refresh_from_db()
+        self.assertEqual(project.default_branch, "main")
+
     def test_review_detail_renders_execution_context_and_findings(self) -> None:
         """A staff user can inspect one review and its persisted comments."""
         user = get_user_model().objects.create_user(username="operator", password="test-password")

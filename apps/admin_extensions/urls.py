@@ -26,6 +26,7 @@ urlpatterns = [
         name="post_merge_request_comments",
     ),
     path("projects/", views.projects, name="projects"),
+    path("projects/<int:pk>/edit/", views.project_edit, name="project_edit"),
     path("projects/<int:pk>/clone-cache/", views.clone_project_cache, name="clone_project_cache"),
     path("merge-requests/", views.merge_requests, name="merge_requests"),
     path("reviews/", views.reviews, name="reviews"),

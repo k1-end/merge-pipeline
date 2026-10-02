@@ -33,7 +33,7 @@
                 <i class="menu-icon bx bx-home-smile"></i><div class="text-truncate">Overview</div>
               </a>
             </li>
-            <li class="menu-item {% if request.resolver_match.url_name == 'projects' %}active{% endif %}">
+            <li class="menu-item {% if request.resolver_match.url_name == 'projects' or request.resolver_match.url_name == 'project_edit' %}active{% endif %}">
               <a href="{% url 'admin_extensions:projects' %}" class="menu-link">
                 <i class="menu-icon bx bx-git-repo-forked"></i><div class="text-truncate">Projects</div>
               </a>

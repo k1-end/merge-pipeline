@@ -5,8 +5,42 @@ from django.db import transaction
 
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
+from apps.projects.models import Project
 from apps.reviews.models import AIProvider
 from apps.sources.models import GitSource
+
+
+class ProjectForm(forms.ModelForm):
+    """Edit a monitored project from the operations panel."""
+
+    class Meta:
+        """Expose the project fields that are writable in Django admin."""
+
+        model = Project
+        fields = (
+            "source",
+            "external_id",
+            "name",
+            "full_name",
+            "web_url",
+            "clone_url",
+            "default_branch",
+            "is_active",
+            "auto_review_enabled",
+            "review_on_draft",
+            "ai_provider",
+        )
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Apply dashboard-compatible styling to each project field."""
+        super().__init__(*args, **kwargs)
+        for field in self.fields.values():
+            if isinstance(field.widget, forms.CheckboxInput):
+                field.widget.attrs["class"] = "form-check-input"
+            elif isinstance(field.widget, forms.Select):
+                field.widget.attrs["class"] = "form-select"
+            else:
+                field.widget.attrs["class"] = "form-control"
 
 
 class SourceForm(forms.ModelForm):

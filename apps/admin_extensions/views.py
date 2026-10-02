@@ -13,7 +13,7 @@ from django.urls import reverse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 
-from apps.admin_extensions.forms import ProviderForm, SourceForm
+from apps.admin_extensions.forms import ProjectForm, ProviderForm, SourceForm
 from apps.admin_extensions.queue_status import (
     QueueControlUnavailableError,
     QueueJobNotCancellableError,
@@ -321,6 +321,18 @@ def projects(request: HttpRequest) -> HttpResponse:
     for project in project_list:
         project.cache_available = RepositoryCache(project).exists()  # type: ignore[attr-defined]
     return render(request, "admin_extensions/projects.html", {"projects": project_list})
+
+
+@staff_member_required(login_url="admin:login")
+def project_edit(request: HttpRequest, pk: int) -> HttpResponse:
+    """Edit a monitored project without leaving the operations panel."""
+    project = get_object_or_404(Project, pk=pk)
+    form = ProjectForm(request.POST or None, instance=project)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Project updated successfully.")
+        return redirect("admin_extensions:projects")
+    return render(request, "admin_extensions/project_form.html", {"form": form, "project": project})
 
 
 @staff_member_required(login_url="admin:login")
