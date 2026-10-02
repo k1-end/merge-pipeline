@@ -82,6 +82,7 @@ class GitLabAdaptor(BaseGitAdaptor):
             "author_username": (item.get("author") or {}).get("username", "unknown"),
             "author_external_id": str((item.get("author") or {}).get("id", "")),
             "source_branch": item["source_branch"],
+            "source_sha": item.get("sha") or "",
             "target_branch": item["target_branch"],
             "web_url": item["web_url"],
             "opened_at": provider_datetime(item["created_at"]),

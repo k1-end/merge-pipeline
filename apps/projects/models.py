@@ -73,6 +73,7 @@ class MergeRequest(TimestampedModel):
     author_username = models.CharField(max_length=255)
     author_external_id = models.CharField(max_length=100, blank=True)
     source_branch = models.CharField(max_length=255)
+    source_sha = models.CharField(max_length=64, blank=True)
     target_branch = models.CharField(max_length=255)
     web_url = models.URLField()
     opened_at = models.DateTimeField()

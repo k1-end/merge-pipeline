@@ -31,7 +31,7 @@ from apps.reviews.services import (
     ReviewConfigurationError,
     ReviewQueueService,
 )
-from apps.reviews.tasks import _raise_or_retry_missing_cache
+from apps.reviews.tasks import _prepare_review_execution, _raise_or_retry_missing_cache
 from apps.reviews.workspaces import ReviewWorkspace
 from apps.sources.models import GitSource
 
@@ -269,6 +269,30 @@ def test_manual_review_queue_rejects_missing_repository_cache(
         ReviewQueueService.queue_manual_review(merge_request)
 
 
+def test_manual_review_queue_reserves_pending_review_before_publish(
+    merge_request: MergeRequest,
+    monkeypatch: Any,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    """A queued task has a durable pending row before a worker can reserve it."""
+    merge_request.project.clone_url = "https://github.com/org/api.git"
+    merge_request.project.save(update_fields=["clone_url", "updated_at"])
+    provider = AIProvider.objects.create(
+        name="default", provider_type=AIProvider.CUSTOM, model_name="mock", is_default=True
+    )
+    apply_async = Mock()
+    monkeypatch.setattr("apps.reviews.tasks.execute_manual_ai_review.apply_async", apply_async)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        task_id = ReviewQueueService.queue_manual_review(merge_request)
+
+    review = Review.objects.get(merge_request=merge_request)
+    assert review.provider == provider
+    assert review.status == Review.PENDING
+    assert review.celery_task_id == task_id
+    apply_async.assert_called_once_with(args=(review.pk,), task_id=task_id)
+
+
 def test_review_workspace_uses_persistent_cache(project: Project, settings: Any, tmp_path: Path) -> None:
     """A cached repository creates and removes a worktree without recloning."""
     settings.REPOSITORY_CACHE_ROOT = str(tmp_path / "cache")
@@ -337,6 +361,24 @@ def test_missing_cache_retries_while_clone_is_running(project: Project) -> None:
         _raise_or_retry_missing_cache(task, project, error)
 
     task.retry.assert_called_once_with(exc=error, countdown=30)
+
+
+def test_redelivered_task_recovers_its_processing_review(merge_request: MergeRequest) -> None:
+    """An acknowledged-late task can resume after its worker disappears."""
+    provider = AIProvider.objects.create(
+        name="redelivery", provider_type=AIProvider.CUSTOM, model_name="mock"
+    )
+    review = Review.objects.create(
+        merge_request=merge_request,
+        provider=provider,
+        status=Review.PROCESSING,
+        celery_task_id="redelivered-task",
+    )
+
+    assert _prepare_review_execution(review, "redelivered-task") is True
+
+    review.refresh_from_db()
+    assert review.status == Review.PENDING
 
 
 def test_pipeline_persists_structured_review(

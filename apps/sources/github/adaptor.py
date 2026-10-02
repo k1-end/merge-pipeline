@@ -93,6 +93,7 @@ class GitHubAdaptor(BaseGitAdaptor):
             "author_username": (item.get("user") or {}).get("login", "unknown"),
             "author_external_id": str((item.get("user") or {}).get("id", "")),
             "source_branch": item["head"]["ref"],
+            "source_sha": item["head"].get("sha") or "",
             "target_branch": item["base"]["ref"],
             "web_url": item["html_url"],
             "opened_at": provider_datetime(item["created_at"]),

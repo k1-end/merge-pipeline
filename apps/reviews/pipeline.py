@@ -25,6 +25,10 @@ class BudgetExceededError(RuntimeError):
     """Raised before a review would exceed its configured budget."""
 
 
+class ReviewStateError(RuntimeError):
+    """Raised when a queued review can no longer transition to processing."""
+
+
 class ReviewPipeline:
     """Run one review with provider selection and budget enforcement."""
 
@@ -41,9 +45,14 @@ class ReviewPipeline:
             raise ValueError("No active AI provider configured")
         return provider
 
-    def run_review(self, mr: MergeRequest, celery_task_id: str | None = None) -> Review:
+    def run_review(
+        self,
+        mr: MergeRequest,
+        celery_task_id: str | None = None,
+        pending_review: Review | None = None,
+    ) -> Review:
         """Execute and persist a complete review."""
-        provider_config = self.select_provider(mr)
+        provider_config = pending_review.provider if pending_review is not None else self.select_provider(mr)
         provider = PROVIDER_MAP[provider_config.provider_type](provider_config)
         request = ReviewRequest(
             mr.title,
@@ -56,12 +65,22 @@ class ReviewPipeline:
         )
         if provider.estimate_cost(request) > self.budget_limit:
             raise BudgetExceededError("Review exceeds configured budget")
-        review = Review.objects.create(
-            merge_request=mr,
-            provider=provider_config,
-            status=Review.PROCESSING,
-            celery_task_id=celery_task_id,
-        )
+        if pending_review is None:
+            review = Review.objects.create(
+                merge_request=mr,
+                provider=provider_config,
+                status=Review.PROCESSING,
+                celery_task_id=celery_task_id,
+            )
+        else:
+            started_at = timezone.now()
+            transitioned = Review.objects.filter(
+                pk=pending_review.pk, status=Review.PENDING
+            ).update(status=Review.PROCESSING, updated_at=started_at)
+            if not transitioned:
+                raise ReviewStateError("Queued review is no longer pending")
+            review = pending_review
+            review.status = Review.PROCESSING
         started = monotonic()
         log_recorder = None
         try:
@@ -134,6 +153,7 @@ class ReviewPipeline:
                 status=Review.FAILED,
                 error_message=str(exc),
                 duration_ms=int((monotonic() - started) * 1000),
+                completed_at=failed_at,
                 source_branch=review.source_branch,
                 target_branch=review.target_branch,
                 base_sha=review.base_sha,

@@ -6,10 +6,12 @@ from unittest.mock import Mock
 
 import pytest
 from cryptography.fernet import Fernet
+from django.utils import timezone
 
 from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
 from apps.projects.models import MergeRequest, Project
+from apps.reviews.models import AIProvider, Review
 from apps.sources.exceptions import AdaptorConfigurationError
 from apps.sources.models import GitSource
 from apps.sync.models import WebhookEvent
@@ -219,3 +221,70 @@ def test_sync_project_reconciles_stale_active_merge_requests(
 
     mr.refresh_from_db()
     assert mr.state == MergeRequest.MERGED
+
+
+def test_sync_project_queues_auto_review_after_commit_for_new_revision(
+    source: GitSource,
+    monkeypatch: Any,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    """New merge requests and later head commits each reserve one automatic review."""
+    provider = AIProvider.objects.create(
+        name="auto", provider_type=AIProvider.CUSTOM, model_name="mock", is_default=True
+    )
+    project = Project.objects.create(
+        source=source,
+        external_id="1",
+        name="api",
+        full_name="org/api",
+        web_url="https://github.com/org/api",
+        clone_url="https://github.com/org/api.git",
+        auto_review_enabled=True,
+        ai_provider=provider,
+    )
+    item = {
+        "external_id": "external-12",
+        "external_iid": "12",
+        "title": "Review me",
+        "description": "Change",
+        "state": MergeRequest.OPENED,
+        "author_username": "user",
+        "author_external_id": "1",
+        "source_branch": "feature",
+        "source_sha": "a" * 40,
+        "target_branch": "main",
+        "web_url": "https://github.com/org/api/pull/12",
+        "opened_at": timezone.now(),
+        "external_updated_at": timezone.now(),
+        "merged_at": None,
+        "closed_at": None,
+    }
+    adaptor = Mock(fetch_merge_requests=Mock(return_value=[item]), fetch_mr_changes=Mock(return_value=[]))
+    monkeypatch.setattr("apps.sync.services.get_adaptor", lambda _source: adaptor)
+    monkeypatch.setattr(SyncService, "reconcile_active_merge_requests", Mock())
+    monkeypatch.setattr(SyncService, "sync_merge_request_discussion", Mock())
+    apply_async = Mock()
+    monkeypatch.setattr("apps.reviews.tasks.execute_ai_review.apply_async", apply_async)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        SyncService().sync_project(project)
+
+    first_review = Review.objects.get()
+    assert first_review.status == Review.PENDING
+    apply_async.assert_called_once_with(
+        args=(first_review.pk,), task_id=first_review.celery_task_id
+    )
+
+    item["source_sha"] = "b" * 40
+    item["external_updated_at"] = timezone.now()
+    with django_capture_on_commit_callbacks(execute=True):
+        SyncService().sync_project(project)
+
+    assert Review.objects.count() == 2
+    assert apply_async.call_count == 2
+
+    with django_capture_on_commit_callbacks(execute=True):
+        SyncService().sync_project(project)
+
+    assert Review.objects.count() == 2
+    assert apply_async.call_count == 2

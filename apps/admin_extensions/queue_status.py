@@ -21,12 +21,16 @@ _SNAPSHOT_CACHE_KEY = "admin_extensions:queue_status:v1"
 _snapshot_lock = Lock()
 
 _REVIEW_TASK_NAMES = {
+    "apps.reviews.tasks.execute_ai_review",
+    "apps.reviews.tasks.execute_manual_ai_review",
     "apps.reviews.tasks.run_ai_review",
     "apps.reviews.tasks.run_manual_ai_review",
 }
 
 _TASK_DETAILS: dict[str, tuple[str, str | None]] = {
     "apps.reviews.tasks.clone_repository_cache": ("Clone repository cache", "project"),
+    "apps.reviews.tasks.execute_ai_review": ("Automatic AI review", "review"),
+    "apps.reviews.tasks.execute_manual_ai_review": ("Manual AI review", "review"),
     "apps.reviews.tasks.run_ai_review": ("Automatic AI review", "merge_request"),
     "apps.reviews.tasks.run_manual_ai_review": ("Manual AI review", "merge_request"),
     "apps.reviews.tasks.post_review_comments": ("Publish review comments", "review"),

@@ -53,13 +53,22 @@ class QueueSnapshotTests(TestCase):
         self, celery_app: MagicMock, _queue_depth: MagicMock
     ) -> None:
         """Running and waiting tasks are summarized without exposing arguments."""
+        provider = AIProvider.objects.create(
+            name="queue-provider", provider_type=AIProvider.CUSTOM, model_name="mock"
+        )
+        review = Review.objects.create(
+            merge_request=self.merge_request,
+            provider=provider,
+            status=Review.PROCESSING,
+            celery_task_id="review-task-id",
+        )
         inspector = celery_app.control.inspect.return_value
         inspector.active.return_value = {
             "celery@worker-1": [
                 {
                     "id": "review-task-id",
-                    "name": "apps.reviews.tasks.run_manual_ai_review",
-                    "args": [self.merge_request.pk],
+                    "name": "apps.reviews.tasks.execute_manual_ai_review",
+                    "args": [review.pk],
                     "time_start": datetime.now(tz=UTC).timestamp() - 12,
                     "kwargs": {"secret": "must-not-leak"},
                 }
@@ -128,8 +137,8 @@ class QueueSnapshotTests(TestCase):
             "celery@worker-1": [
                 {
                     "id": "review-task-id",
-                    "name": "apps.reviews.tasks.run_manual_ai_review",
-                    "args": [self.merge_request.pk],
+                    "name": "apps.reviews.tasks.execute_manual_ai_review",
+                    "args": [review.pk],
                 }
             ]
         }
@@ -156,7 +165,7 @@ class QueueSnapshotTests(TestCase):
             "celery@worker-1": [
                 {
                     "id": "waiting-task-id",
-                    "name": "apps.reviews.tasks.run_ai_review",
+                    "name": "apps.reviews.tasks.execute_ai_review",
                     "args": [self.merge_request.pk],
                 }
             ]

@@ -1,5 +1,6 @@
 """Business logic for importing repositories and merge requests."""
 
+import logging
 import re
 from time import monotonic
 from typing import Any, TypedDict
@@ -20,6 +21,39 @@ from apps.reviews.models import ReviewComment
 from apps.sources.factory import get_adaptor
 from apps.sources.models import GitSource
 from apps.sync.models import SyncLog
+
+logger = logging.getLogger(__name__)
+
+
+def _queue_automatic_review(merge_request_id: int) -> None:
+    """Queue after commit without allowing review infrastructure to fail synchronization."""
+    try:
+        from apps.reviews.services import (
+            ReviewAlreadyRunningError,
+            ReviewConfigurationError,
+            ReviewQueueService,
+        )
+    except Exception:  # noqa: BLE001 - synchronization has already committed successfully
+        logger.exception(
+            "Automatic review service could not be loaded",
+            extra={"merge_request_id": merge_request_id},
+        )
+        return
+    try:
+        merge_request = MergeRequest.objects.select_related(
+            "project", "project__source", "project__ai_provider"
+        ).get(pk=merge_request_id)
+        ReviewQueueService.queue_automatic_review(merge_request)
+    except (ReviewAlreadyRunningError, ReviewConfigurationError):
+        logger.info(
+            "Automatic review was skipped",
+            extra={"merge_request_id": merge_request_id},
+            exc_info=True,
+        )
+    except Exception:  # noqa: BLE001 - synchronization has already committed successfully
+        logger.exception(
+            "Automatic review could not be queued", extra={"merge_request_id": merge_request_id}
+        )
 
 
 class SyncCounts(TypedDict):
@@ -69,8 +103,22 @@ class SyncService:
                     mr, created = MergeRequest.objects.update_or_create(
                         project=project, external_iid=item["external_iid"], defaults=defaults
                     )
-                    if created or (existing and self._merge_request_content_changed(existing, item)):
+                    content_changed = bool(
+                        existing and self._merge_request_content_changed(existing, item)
+                    )
+                    review_worthy_change = created or bool(
+                        existing
+                        and (
+                            existing.source_sha != item.get("source_sha", "")
+                            or existing.target_branch != item.get("target_branch", "")
+                        )
+                    )
+                    if created or content_changed:
                         self._sync_changes(adaptor, project, mr)
+                    if review_worthy_change:
+                        transaction.on_commit(
+                            lambda merge_request_id=mr.pk: _queue_automatic_review(merge_request_id)
+                        )
                 counts["new_mrs" if created else "updated_mrs"] += 1
             self.reconcile_active_merge_requests(project)
             discussion_mrs = MergeRequest.objects.filter(project=project).filter(
@@ -145,8 +193,8 @@ class SyncService:
     def _merge_request_content_changed(mr: MergeRequest, item: dict) -> bool:
         """Return whether a remote update requires refreshing the file snapshot."""
         return any(
-            getattr(mr, field) != item[field]
-            for field in ("source_branch", "target_branch", "title", "description")
+            getattr(mr, field) != item.get(field, "")
+            for field in ("source_branch", "source_sha", "target_branch", "title", "description")
         )
 
     def _sync_changes(self, adaptor: Any, project: Project, mr: MergeRequest) -> None:
