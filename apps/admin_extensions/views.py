@@ -13,7 +13,7 @@ from django.urls import reverse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 
-from apps.admin_extensions.forms import ProjectForm, ProviderForm, SourceForm
+from apps.admin_extensions.forms import ProjectForm, ProviderForm, SizeLabelPolicyForm, SourceForm
 from apps.admin_extensions.queue_status import (
     QueueControlUnavailableError,
     QueueJobNotCancellableError,
@@ -29,6 +29,7 @@ from apps.reviews.services import (
     ReviewConfigurationError,
     ReviewQueueService,
 )
+from apps.sizing.models import MergeRequestSizeResult, SizeLabelPolicy
 from apps.sources.models import GitSource
 
 
@@ -146,6 +147,49 @@ def sync_merge_requests(request: HttpRequest) -> HttpResponse:
     else:
         messages.success(request, "Merge-request sync queued for active projects.")
     return redirect("admin_extensions:dashboard")
+
+
+@staff_member_required(login_url="admin:login")
+def size_labels(request: HttpRequest) -> HttpResponse:
+    """Display and update the global size-label policy."""
+    policy = SizeLabelPolicy.load()
+    if request.method == "POST":
+        form = SizeLabelPolicyForm(request.POST, instance=policy)
+        if form.is_valid():
+            changed = bool(form.changed_data)
+            form.save()
+            if changed:
+                from apps.sizing.tasks import queue_pending_size_labels
+
+                queue_pending_size_labels.delay()
+            messages.success(request, "Size-label settings saved.")
+            return redirect("admin_extensions:size_labels")
+    else:
+        form = SizeLabelPolicyForm(instance=policy)
+    context = {
+        "form": form,
+        "policy": policy,
+        "completed_count": MergeRequestSizeResult.objects.filter(
+            status=MergeRequestSizeResult.COMPLETED
+        ).count(),
+        "failed_count": MergeRequestSizeResult.objects.filter(status=MergeRequestSizeResult.FAILED).count(),
+    }
+    return render(request, "admin_extensions/size_labels.html", context)
+
+
+@staff_member_required(login_url="admin:login")
+def relabel_open_merge_requests(request: HttpRequest) -> HttpResponse:
+    """Force every open merge request through the size-labeling queue."""
+    if request.method != "POST":
+        return HttpResponse(status=405)
+    MergeRequestSizeResult.objects.filter(
+        merge_request__state__in=[MergeRequest.OPENED, MergeRequest.DRAFT]
+    ).update(policy_revision=0)
+    from apps.sizing.tasks import queue_pending_size_labels
+
+    queue_pending_size_labels.delay()
+    messages.success(request, "Open merge requests queued for size relabeling.")
+    return redirect("admin_extensions:size_labels")
 
 
 @staff_member_required(login_url="admin:login")

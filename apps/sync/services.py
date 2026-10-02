@@ -56,6 +56,19 @@ def _queue_automatic_review(merge_request_id: int) -> None:
         )
 
 
+def _queue_size_label(merge_request_id: int) -> None:
+    """Queue size labeling without allowing broker failures to roll back synchronization."""
+    try:
+        from apps.sizing.services import queue_merge_request_size
+
+        queue_merge_request_size(merge_request_id)
+    except Exception:  # noqa: BLE001 - synchronization has already committed successfully
+        logger.exception(
+            "Merge-request size labeling could not be queued",
+            extra={"merge_request_id": merge_request_id},
+        )
+
+
 class SyncCounts(TypedDict):
     """Counters returned by a project synchronization."""
 
@@ -118,6 +131,9 @@ class SyncService:
                     if review_worthy_change:
                         transaction.on_commit(
                             lambda merge_request_id=mr.pk: _queue_automatic_review(merge_request_id)
+                        )
+                        transaction.on_commit(
+                            lambda merge_request_id=mr.pk: _queue_size_label(merge_request_id)
                         )
                 counts["new_mrs" if created else "updated_mrs"] += 1
             self.reconcile_active_merge_requests(project)

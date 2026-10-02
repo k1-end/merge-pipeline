@@ -92,6 +92,31 @@ services:
         condition: service_healthy
     command: celery -A config worker -l info --concurrency=2
 
+  size-labeling-worker:
+    build:
+      context: ../..
+      dockerfile: .docker/prod/Dockerfile
+    restart: unless-stopped
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-secret-key}
+      DJANGO_DEBUG: "True"
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: merge_pipeline
+      DB_USER: merge_pipeline
+      DB_PASSWORD: ${DB_PASSWORD:-secure-password}
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-dev-encryption-key}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A config worker -l info -Q size-labeling --concurrency=2
+
   beat:
     build:
       context: ../..

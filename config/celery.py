@@ -14,5 +14,10 @@ app.conf.beat_schedule = {
     "sync-all-active-projects": {"task": "apps.sync.tasks.sync_all_projects", "schedule": crontab(minute="*/15")},
     "sync-stale-projects": {"task": "apps.sync.tasks.sync_stale_projects", "schedule": crontab(minute=0, hour="*/6")},
     "cleanup-old-webhook-events": {"task": "apps.sync.tasks.cleanup_webhook_events", "schedule": crontab(minute=0, hour=3)},
+    "backfill-merge-request-size-labels": {
+        "task": "apps.sizing.tasks.queue_pending_size_labels",
+        "schedule": crontab(minute="*/15"),
+        "options": {"queue": "size-labeling"},
+    },
 }
 app.conf.timezone = "UTC"

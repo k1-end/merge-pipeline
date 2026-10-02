@@ -7,6 +7,7 @@ from apps.credentials.models import GitSourceCredential
 from apps.credentials.services import CredentialEncryption
 from apps.projects.models import Project
 from apps.reviews.models import AIProvider
+from apps.sizing.models import SizeLabelPolicy
 from apps.sources.models import GitSource
 
 
@@ -126,3 +127,40 @@ class ProviderForm(forms.ModelForm):
             provider.api_key_encrypted = CredentialEncryption().encrypt(api_key)
             provider.save(update_fields=["api_key_encrypted", "updated_at"])
         return provider
+
+
+class SizeLabelPolicyForm(forms.ModelForm):
+    """Edit the global merge-request size thresholds."""
+
+    class Meta:
+        """Expose the policy fields editable from the dashboard."""
+
+        model = SizeLabelPolicy
+        fields = ("enabled", "xs_max", "s_max", "m_max", "l_max")
+        labels = {
+            "xs_max": "XS maximum",
+            "s_max": "S maximum",
+            "m_max": "M maximum",
+            "l_max": "L maximum",
+        }
+        help_texts = {
+            "l_max": "Changes above this value are labeled size/XL.",
+        }
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Apply dashboard-compatible styling."""
+        super().__init__(*args, **kwargs)
+        for field in self.fields.values():
+            if isinstance(field.widget, forms.CheckboxInput):
+                field.widget.attrs["class"] = "form-check-input"
+            else:
+                field.widget.attrs["class"] = "form-control"
+
+    def save(self, commit: bool = True) -> SizeLabelPolicy:
+        """Increment the revision whenever policy inputs change."""
+        policy = super().save(commit=False)
+        if self.changed_data:
+            policy.revision += 1
+        if commit:
+            policy.save()
+        return policy

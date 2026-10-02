@@ -46,6 +46,10 @@ class BaseGitAdaptor(ABC):
         """Return normalized changed files for a merge request."""
 
     @abstractmethod
+    def fetch_mr_size(self, project: Any, mr_iid: str) -> tuple[int, int]:
+        """Return additions and deletions for a merge request."""
+
+    @abstractmethod
     def fetch_mr_comments(self, project: Any, mr_iid: str) -> list[dict]:
         """Return normalized remote comments and threaded notes."""
 
@@ -74,3 +78,7 @@ class BaseGitAdaptor(ABC):
     @abstractmethod
     def update_mr_state(self, project: Any, mr_iid: str, action: str) -> bool:
         """Apply close, reopen, or merge to a remote merge request."""
+
+    @abstractmethod
+    def replace_size_label(self, project: Any, mr_iid: str, label: str) -> None:
+        """Replace managed size labels while preserving unrelated labels."""

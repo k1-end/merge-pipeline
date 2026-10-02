@@ -84,6 +84,22 @@ services:
         condition: service_healthy
     command: celery -A config worker -l info --concurrency=2
 
+  size-labeling-worker:
+    build:
+      context: ../..
+      dockerfile: .docker/dev/Dockerfile
+    env_file:
+      - ../../.env
+    environment: *app-environment
+    volumes:
+      - ../..:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A config worker -l info -Q size-labeling --concurrency=2
+
   beat:
     build:
       context: ../..

@@ -45,6 +45,7 @@ LOCAL_APPS = [
     "apps.projects",
     "apps.reviews",
     "apps.sync",
+    "apps.sizing",
     "apps.credentials",
     "apps.admin_extensions",
 ]

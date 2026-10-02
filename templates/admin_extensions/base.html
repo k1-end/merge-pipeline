@@ -59,6 +59,11 @@
                 <i class="menu-icon bx bx-slider-alt"></i><div class="text-truncate">AI providers</div>
               </a>
             </li>
+            <li class="menu-item {% if request.resolver_match.url_name == 'size_labels' %}active{% endif %}">
+              <a href="{% url 'admin_extensions:size_labels' %}" class="menu-link">
+                <i class="menu-icon bx bx-purchase-tag"></i><div class="text-truncate">Size labels</div>
+              </a>
+            </li>
             <li class="menu-header small text-uppercase"><span class="menu-header-text">System</span></li>
             <li class="menu-item">
               <a href="{% url 'admin:index' %}" class="menu-link">

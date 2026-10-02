@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 from typing import Any
+from urllib.parse import quote
 
 from apps.sources.base import BaseGitAdaptor
 from apps.sources.client import SourceClient
@@ -104,20 +105,28 @@ class GitHubAdaptor(BaseGitAdaptor):
 
     def fetch_mr_changes(self, project: Any, mr_iid: str) -> list[dict]:
         """Fetch changed files and patches for a GitHub pull request."""
-        data = self.client.get_json(
-            f"repos/{project.full_name}/pulls/{mr_iid}/files", params={"per_page": 100}
-        )
+        data = self._fetch_pages(f"repos/{project.full_name}/pulls/{mr_iid}/files")
         return [
             {
                 "file_path": item["filename"],
                 "old_path": "",
-                "change_type": {"added": "added", "removed": "deleted", "modified": "modified"}.get(
-                    item.get("status"), "modified"
-                ),
+                "change_type": {
+                    "added": "added",
+                    "removed": "deleted",
+                    "modified": "modified",
+                }.get(str(item.get("status") or ""), "modified"),
                 "diff": item.get("patch") or "",
             }
             for item in data
         ]
+
+    def fetch_mr_size(self, project: Any, mr_iid: str) -> tuple[int, int]:
+        """Sum GitHub's native per-file line statistics across every page."""
+        files = self._fetch_pages(f"repos/{project.full_name}/pulls/{mr_iid}/files")
+        return (
+            sum(int(item.get("additions") or 0) for item in files),
+            sum(int(item.get("deletions") or 0) for item in files),
+        )
 
     def _fetch_pages(self, path: str) -> list[dict]:
         """Fetch every page from a GitHub list endpoint."""
@@ -275,3 +284,24 @@ class GitHubAdaptor(BaseGitAdaptor):
         else:
             return False
         return True
+
+    def replace_size_label(self, project: Any, mr_iid: str, label: str) -> None:
+        """Replace only size/* labels on a GitHub pull request."""
+        path = f"repos/{project.full_name}/issues/{mr_iid}/labels"
+        current = self._fetch_pages(path)
+        names = {str(item.get("name") or "") for item in current}
+        for old_label in names:
+            if old_label.startswith("size/") and old_label != label:
+                self.client.request_json("DELETE", f"{path}/{quote(old_label, safe='')}")
+        if label not in names:
+            repository_labels = {
+                str(item.get("name") or "")
+                for item in self._fetch_pages(f"repos/{project.full_name}/labels")
+            }
+            if label not in repository_labels:
+                self.client.request_json(
+                    "POST",
+                    f"repos/{project.full_name}/labels",
+                    {"name": label, "color": "428BCA", "description": "Merge request size"},
+                )
+            self.client.request_json("POST", path, {"labels": [label]})

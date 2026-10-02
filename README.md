@@ -35,6 +35,7 @@ python manage.py createsuperuser
 # 4. Run
 python manage.py runserver            # web + admin at http://localhost:8000
 celery -A config worker -l info       # worker (separate terminal)
+celery -A config worker -l info -Q size-labeling  # size-label worker
 celery -A config beat -l info         # scheduler (separate terminal)
 ```
 
@@ -67,9 +68,20 @@ apps/sources/      git hosts (GitLab/GitHub) + webhooks
 apps/projects/     repositories + merge requests
 apps/reviews/      AI providers + review pipeline
 apps/sync/         Celery tasks + webhook processors
+apps/sizing/       configurable MR size classification + label worker
 apps/credentials/  encrypted credentials
 apps/admin_extensions/  custom admin
 ```
+
+## Merge-request size labels
+
+The dedicated `size-labeling` Celery worker publishes one of `size/XS`, `size/S`,
+`size/M`, `size/L`, or `size/XL` to GitLab merge requests and GitHub pull requests.
+Sizes use additions plus deletions. Staff can edit the global thresholds from
+**Configuration → Size labels** in the operations dashboard. Saving a changed policy
+or using **Relabel open requests** queues open and draft requests for reclassification;
+unrelated provider labels are preserved.
+
 ## OpenCode Reviews
 
 OpenCode reviews run in the Celery worker as a read-only agent against a disposable

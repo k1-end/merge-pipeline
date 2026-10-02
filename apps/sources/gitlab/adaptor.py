@@ -37,7 +37,7 @@ class GitLabAdaptor(BaseGitAdaptor):
 
     def fetch_merge_requests(self, project: Any, updated_after: Any = None) -> list[dict]:
         """Fetch GitLab merge requests, optionally restricted to a time window."""
-        params = {
+        params: dict[str, Any] = {
             "state": "all" if updated_after else "opened",
             "order_by": "updated_at",
             "sort": "desc",
@@ -46,7 +46,7 @@ class GitLabAdaptor(BaseGitAdaptor):
         }
         if updated_after:
             params["updated_after"] = updated_after.isoformat()
-        results = []
+        results: list[dict] = []
         while True:
             data = self.client.get_json(f"projects/{project.external_id}/merge_requests", params=params)
             results.extend(self._normalize_merge_request(item) for item in data)
@@ -111,6 +111,24 @@ class GitLabAdaptor(BaseGitAdaptor):
             }
             for item in data.get("changes", [])
         ]
+
+    def fetch_mr_size(self, project: Any, mr_iid: str) -> tuple[int, int]:
+        """Count changed lines from GitLab's complete raw diff response."""
+        data = self.client.get_json(
+            f"projects/{project.external_id}/merge_requests/{mr_iid}/changes",
+            params={"access_raw_diffs": "true"},
+        )
+        if data.get("overflow"):
+            raise AdaptorConfigurationError("GitLab returned an incomplete merge-request diff")
+        additions = 0
+        deletions = 0
+        for item in data.get("changes", []):
+            for line in (item.get("diff") or "").splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    additions += 1
+                elif line.startswith("-") and not line.startswith("---"):
+                    deletions += 1
+        return additions, deletions
 
     def fetch_mr_comments(self, project: Any, mr_iid: str) -> list[dict]:
         """Fetch authored GitLab discussion notes with thread metadata."""
@@ -217,3 +235,18 @@ class GitLabAdaptor(BaseGitAdaptor):
             return False
         self.client.request_json("PUT", f"projects/{project.external_id}/merge_requests/{mr_iid}/{state}")
         return True
+
+    def replace_size_label(self, project: Any, mr_iid: str, label: str) -> None:
+        """Replace only size/* labels on a GitLab merge request."""
+        path = f"projects/{project.external_id}/merge_requests/{mr_iid}"
+        data = self.client.get_json(path)
+        names = {
+            str(item.get("title") if isinstance(item, dict) else item)
+            for item in data.get("labels", [])
+        }
+        old_labels = sorted(name for name in names if name.startswith("size/") and name != label)
+        payload: dict[str, str] = {"add_labels": label}
+        if old_labels:
+            payload["remove_labels"] = ",".join(old_labels)
+        if label not in names or old_labels:
+            self.client.request_json("PUT", path, payload)

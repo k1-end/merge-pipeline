@@ -13,6 +13,12 @@ urlpatterns = [
         name="cancel_queue_job",
     ),
     path("sync/", views.sync_merge_requests, name="sync_merge_requests"),
+    path("size-labels/", views.size_labels, name="size_labels"),
+    path(
+        "size-labels/relabel/",
+        views.relabel_open_merge_requests,
+        name="relabel_open_merge_requests",
+    ),
     path(
         "merge-requests/review-filtered/",
         views.run_filtered_merge_request_reviews,
