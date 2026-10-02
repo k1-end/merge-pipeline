@@ -89,7 +89,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
                 to_attr="recent_reviews",
             )
         )
-        .order_by("-external_updated_at", "-id")[:8]
+        .order_by("-opened_at", "-id")[:8]
     )
     for merge_request in recent_merge_requests:
         merge_request.latest_review = (
@@ -432,7 +432,7 @@ def merge_requests(request: HttpRequest) -> HttpResponse:
                 to_attr="recent_reviews",
             )
         )
-        .order_by("-external_updated_at", "-id")
+        .order_by("-opened_at", "-id")
     )
 
     projects = Project.objects.order_by("full_name")

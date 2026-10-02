@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -44,6 +45,55 @@ class DashboardAccessTests(TestCase):
         self.assertContains(response, "Review operations")
         self.assertContains(response, "Active projects")
         self.assertContains(response, "Sync merge requests")
+
+    def test_dashboard_lists_recent_merge_requests_by_creation_time(self) -> None:
+        user = get_user_model().objects.create_user(username="operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="dashboard-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="dashboard-project",
+            name="dashboard",
+            full_name="org/dashboard",
+            web_url="https://github.com/org/dashboard",
+        )
+        now = timezone.now()
+        older_request = MergeRequest.objects.create(
+            project=project,
+            external_id="1",
+            external_iid="1",
+            title="Older but recently updated",
+            state=MergeRequest.OPENED,
+            author_username="developer",
+            source_branch="older",
+            target_branch="main",
+            web_url="https://github.com/org/dashboard/pull/1",
+            opened_at=now - timedelta(days=2),
+            external_updated_at=now,
+        )
+        newer_request = MergeRequest.objects.create(
+            project=project,
+            external_id="2",
+            external_iid="2",
+            title="Newer merge request",
+            state=MergeRequest.OPENED,
+            author_username="developer",
+            source_branch="newer",
+            target_branch="main",
+            web_url="https://github.com/org/dashboard/pull/2",
+            opened_at=now - timedelta(days=1),
+            external_updated_at=now - timedelta(days=3),
+        )
+
+        response = self.client.get(reverse("admin_extensions:dashboard"))
+
+        merge_requests = list(response.context["recent_merge_requests"])
+        self.assertEqual(merge_requests, [newer_request, older_request])
+        self.assertContains(response, "<th>Created</th>", html=True)
 
     def test_dashboard_can_queue_merge_request_sync(self) -> None:
         """The dashboard exposes a staff-only POST action for source synchronization."""
@@ -513,6 +563,55 @@ class DashboardAccessTests(TestCase):
             response,
             reverse("admin_extensions:merge_request_detail", args=[merge_request.pk]),
         )
+
+    def test_merge_request_index_lists_requests_by_creation_time(self) -> None:
+        user = get_user_model().objects.create_user(username="created-order", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+        source = GitSource.objects.create(
+            name="created-order-source", source_type=GitSource.GITHUB, base_url="https://api.github.com"
+        )
+        project = Project.objects.create(
+            source=source,
+            external_id="created-order-project",
+            name="api",
+            full_name="org/api",
+            web_url="https://github.com/org/api",
+        )
+        now = timezone.now()
+        older_request = MergeRequest.objects.create(
+            project=project,
+            external_id="older",
+            external_iid="1",
+            title="Older but recently updated",
+            state=MergeRequest.OPENED,
+            author_username="developer",
+            source_branch="older",
+            target_branch="main",
+            web_url="https://github.com/org/api/pull/1",
+            opened_at=now - timedelta(days=2),
+            external_updated_at=now,
+        )
+        newer_request = MergeRequest.objects.create(
+            project=project,
+            external_id="newer",
+            external_iid="2",
+            title="Newer merge request",
+            state=MergeRequest.OPENED,
+            author_username="developer",
+            source_branch="newer",
+            target_branch="main",
+            web_url="https://github.com/org/api/pull/2",
+            opened_at=now - timedelta(days=1),
+            external_updated_at=now - timedelta(days=3),
+        )
+
+        response = self.client.get(reverse("admin_extensions:merge_requests"))
+
+        merge_requests = list(response.context["merge_requests"].object_list)
+        self.assertEqual(merge_requests, [newer_request, older_request])
+        self.assertContains(response, "<th>Created</th>", html=True)
 
     def test_merge_request_index_filters_by_project(self) -> None:
         """The project selector limits rows while retaining the selected option."""

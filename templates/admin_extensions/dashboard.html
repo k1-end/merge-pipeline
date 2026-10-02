@@ -42,14 +42,14 @@
   <div class="card-footer bg-transparent small text-muted" id="queue-updated">Waiting for the first snapshot.</div>
 </section>
 <div class="row g-4">
-  <div class="col-xl-8"><div class="card h-100"><div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Recent merge requests</h5><a href="{% url 'admin_extensions:merge_requests' %}" class="btn btn-sm btn-label-primary">View all</a></div><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Request</th><th>Project</th><th>Status</th><th>AI review</th><th>Updated</th><th></th></tr></thead><tbody>
+  <div class="col-xl-8"><div class="card h-100"><div class="card-header d-flex justify-content-between align-items-center"><h5 class="mb-0">Recent merge requests</h5><a href="{% url 'admin_extensions:merge_requests' %}" class="btn btn-sm btn-label-primary">View all</a></div><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Request</th><th>Project</th><th>Status</th><th>AI review</th><th>Created</th><th></th></tr></thead><tbody>
     {% for merge_request in recent_merge_requests %}
     <tr>
       <td><a href="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}">!{{ merge_request.external_iid }} {{ merge_request.title|truncatechars:48 }}</a></td>
       <td>{{ merge_request.project.name }}</td>
       <td><span class="badge {% if merge_request.state == 'opened' %}bg-label-success{% elif merge_request.state == 'draft' %}bg-label-warning{% elif merge_request.state == 'merged' %}bg-label-primary{% else %}bg-label-secondary{% endif %}">{{ merge_request.get_state_display }}</span></td>
       <td>{% if merge_request.latest_review %}<span class="badge {% if merge_request.latest_review.status == 'completed' %}bg-label-success{% elif merge_request.latest_review.status == 'failed' %}bg-label-danger{% elif merge_request.latest_review.status == 'cancelled' %}bg-label-secondary{% elif merge_request.latest_review.status == 'processing' %}bg-label-info{% else %}bg-label-warning{% endif %}">{{ merge_request.latest_review.get_status_display }}</span>{% else %}<span class="text-muted small">No review</span>{% endif %}</td>
-      <td>{{ merge_request.external_updated_at|date:"M j, H:i" }}</td>
+      <td>{{ merge_request.opened_at|date:"M j, H:i" }}</td>
       <td class="text-nowrap"><form method="post" action="{% url 'admin_extensions:run_merge_request_review' merge_request.pk %}" class="d-inline">{% csrf_token %}<button type="submit" class="btn btn-sm btn-icon btn-label-primary" title="Run AI review" {% if merge_request.latest_review.status == 'pending' or merge_request.latest_review.status == 'processing' %}disabled{% endif %}><i class="bx bx-bot"></i></button></form> <a href="{% url 'admin_extensions:merge_request_detail' merge_request.pk %}" class="btn btn-sm btn-icon btn-label-secondary" title="View merge request"><i class="bx bx-chevron-right"></i></a></td>
     </tr>
     {% empty %}<tr><td colspan="6" class="text-center text-muted py-5">No merge requests have been imported yet.</td></tr>
