@@ -4,6 +4,8 @@
 
 'use strict';
 
+const sidebarCollapseStorageKey = 'merge-pipeline:sidebar-collapsed';
+
 let menu,
   animate;
 document.addEventListener('DOMContentLoaded', function () {
@@ -14,6 +16,33 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 (function () {
+  const sidebarCollapseToggle = document.getElementById('layout-menu-collapse');
+
+  function updateSidebarCollapseToggle(collapsed) {
+    if (!sidebarCollapseToggle) return;
+
+    const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+    sidebarCollapseToggle.setAttribute('aria-expanded', String(!collapsed));
+    sidebarCollapseToggle.setAttribute('aria-label', label);
+    sidebarCollapseToggle.setAttribute('title', label);
+  }
+
+  function readSidebarCollapsedPreference() {
+    try {
+      return window.localStorage.getItem(sidebarCollapseStorageKey) === 'true';
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function storeSidebarCollapsedPreference(collapsed) {
+    try {
+      window.localStorage.setItem(sidebarCollapseStorageKey, String(collapsed));
+    } catch (_error) {
+      // Keep the control functional when browser storage is unavailable.
+    }
+  }
+
   // Initialize menu
   //-----------------
 
@@ -33,36 +62,18 @@ document.addEventListener('DOMContentLoaded', function () {
   menuToggler.forEach(item => {
     item.addEventListener('click', event => {
       event.preventDefault();
-      window.Helpers.toggleCollapsed();
+      if (window.Helpers.isSmallScreen()) {
+        window.Helpers.toggleCollapsed();
+        return;
+      }
+
+      const collapsed = !document.documentElement.classList.contains('layout-menu-collapsed');
+      document.documentElement.classList.toggle('layout-menu-collapsed', collapsed);
+      storeSidebarCollapsedPreference(collapsed);
+      updateSidebarCollapseToggle(collapsed);
+      window.dispatchEvent(new Event('resize'));
     });
   });
-
-  // Display menu toggle (layout-menu-toggle) on hover with delay
-  let delay = function (elem, callback) {
-    let timeout = null;
-    elem.onmouseenter = function () {
-      // Set timeout to be a timer which will invoke callback after 300ms (not for small screen)
-      if (!Helpers.isSmallScreen()) {
-        timeout = setTimeout(callback, 300);
-      } else {
-        timeout = setTimeout(callback, 0);
-      }
-    };
-
-    elem.onmouseleave = function () {
-      // Clear any timers set to timeout
-      document.querySelector('.layout-menu-toggle').classList.remove('d-block');
-      clearTimeout(timeout);
-    };
-  };
-  if (document.getElementById('layout-menu')) {
-    delay(document.getElementById('layout-menu'), function () {
-      // not for small screen
-      if (!Helpers.isSmallScreen()) {
-        document.querySelector('.layout-menu-toggle').classList.add('d-block');
-      }
-    });
-  }
 
   // Display in main menu when menu scrolls
   let menuInnerContainer = document.getElementsByClassName('menu-inner'),
@@ -120,8 +131,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // If current layout is vertical and current window screen is > small
 
-  // Auto update menu collapsed/expanded based on the themeConfig
-      window.Helpers.setCollapsed(true, false);
+  // Restore the operator's desktop sidebar preference.
+  const sidebarCollapsed = readSidebarCollapsedPreference();
+  document.documentElement.classList.toggle('layout-menu-collapsed', sidebarCollapsed);
+  updateSidebarCollapseToggle(sidebarCollapsed);
 })();
 // Utils
 function isMacOS() {

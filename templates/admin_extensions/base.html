@@ -10,6 +10,17 @@
     <link rel="stylesheet" href="{% static 'admin_extensions/vendor/css/core.css' %}">
     <link rel="stylesheet" href="{% static 'admin_extensions/css/demo.css' %}">
     <link rel="stylesheet" href="{% static 'admin_extensions/css/dashboard.css' %}">
+    <script>
+      (() => {
+        try {
+          if (window.localStorage.getItem('merge-pipeline:sidebar-collapsed') === 'true') {
+            document.documentElement.classList.add('layout-menu-collapsed');
+          }
+        } catch (_error) {
+          // The sidebar still works when browser storage is unavailable.
+        }
+      })();
+    </script>
     {% block extra_css %}{% endblock %}
   </head>
   <body>
@@ -21,7 +32,16 @@
               <span class="app-brand-logo demo"><span class="brand-mark">MP</span></span>
               <span class="app-brand-text demo menu-text fw-bold ms-2">Merge Pipeline</span>
             </a>
-            <a href="javascript:void(0);" class="layout-menu-toggle menu-link text-large ms-auto d-xl-none">
+            <a
+              href="javascript:void(0);"
+              id="layout-menu-collapse"
+              class="layout-menu-toggle menu-link text-large ms-auto"
+              role="button"
+              aria-controls="layout-menu"
+              aria-expanded="true"
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar"
+            >
               <i class="bx bx-chevron-left bx-sm d-flex align-items-center justify-content-center"></i>
             </a>
           </div>

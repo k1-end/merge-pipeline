@@ -46,6 +46,23 @@ class DashboardAccessTests(TestCase):
         self.assertContains(response, "Active projects")
         self.assertContains(response, "Sync merge requests")
 
+    def test_dashboard_exposes_persistent_desktop_sidebar_toggle(self) -> None:
+        user = get_user_model().objects.create_user(username="sidebar-operator", password="test-password")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("admin_extensions:dashboard"))
+
+        self.assertContains(response, 'id="layout-menu-collapse"')
+        self.assertContains(response, 'aria-controls="layout-menu"')
+        self.assertContains(response, 'aria-expanded="true"')
+        self.assertContains(response, "merge-pipeline:sidebar-collapsed")
+        self.assertNotContains(
+            response,
+            'class="layout-menu-toggle menu-link text-large ms-auto d-xl-none"',
+        )
+
     def test_dashboard_lists_recent_merge_requests_by_creation_time(self) -> None:
         user = get_user_model().objects.create_user(username="operator", password="test-password")
         user.is_staff = True
