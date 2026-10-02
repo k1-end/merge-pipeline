@@ -15,6 +15,15 @@ from apps.sources.models import GitSource
 class DashboardAccessTests(TestCase):
     """Verify the separate panel uses Django's existing staff boundary."""
 
+    def test_root_path_redirects_to_dashboard(self) -> None:
+        response = self.client.get("/")
+
+        self.assertRedirects(
+            response,
+            reverse("admin_extensions:dashboard"),
+            fetch_redirect_response=False,
+        )
+
     def test_anonymous_users_are_sent_to_django_admin_login(self) -> None:
         response = self.client.get(reverse("admin_extensions:dashboard"))
 
