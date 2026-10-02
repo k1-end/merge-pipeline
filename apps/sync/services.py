@@ -102,6 +102,7 @@ class SyncService:
 
     def sync_project(self, project: Project) -> SyncCounts:
         """Import merge requests and their changed files idempotently."""
+        sync_started_at = timezone.now()
         started = monotonic()
         log = SyncLog.objects.create(source=project.source, project=project, operation=SyncLog.INCREMENTAL)
         counts: SyncCounts = {"new_mrs": 0, "updated_mrs": 0, "errors": []}
@@ -146,7 +147,7 @@ class SyncService:
                     self.sync_merge_request_discussion(mr, adaptor=adaptor)
                 except Exception as exc:  # noqa: BLE001 - isolate one discussion failure
                     counts["errors"].append(f"MR !{mr.external_iid} discussion: {exc}")
-            project.last_synced_at = timezone.now()
+            project.last_synced_at = sync_started_at
             project.save(update_fields=["last_synced_at", "updated_at"])
             log.status = SyncLog.COMPLETED if not counts["errors"] else SyncLog.PARTIAL
         except Exception as exc:

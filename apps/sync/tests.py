@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone as dt_timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import Mock
 
@@ -228,10 +228,10 @@ def test_sync_project_does_not_skip_merge_request_created_during_previous_sync(
     source: GitSource, monkeypatch: Any
 ) -> None:
     """The next incremental sync imports requests created while the previous sync was running."""
-    previous_cursor = datetime(2026, 9, 28, 6, 45, tzinfo=dt_timezone.utc)
-    sync_started_at = datetime(2026, 9, 28, 6, 51, 36, tzinfo=dt_timezone.utc)
-    merge_request_updated_at = datetime(2026, 9, 28, 6, 51, 42, tzinfo=dt_timezone.utc)
-    sync_finished_at = datetime(2026, 9, 28, 6, 52, 58, tzinfo=dt_timezone.utc)
+    previous_cursor = datetime(2026, 9, 28, 6, 45, tzinfo=UTC)
+    sync_started_at = datetime(2026, 9, 28, 6, 51, 36, tzinfo=UTC)
+    merge_request_updated_at = datetime(2026, 9, 28, 6, 51, 42, tzinfo=UTC)
+    sync_finished_at = datetime(2026, 9, 28, 6, 52, 58, tzinfo=UTC)
     project = Project.objects.create(
         source=source,
         external_id="1",
