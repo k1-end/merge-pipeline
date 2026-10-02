@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from datetime import datetime, timezone as dt_timezone
 from typing import Any
 from unittest.mock import Mock
 
@@ -221,6 +222,66 @@ def test_sync_project_reconciles_stale_active_merge_requests(
 
     mr.refresh_from_db()
     assert mr.state == MergeRequest.MERGED
+
+
+def test_sync_project_does_not_skip_merge_request_created_during_previous_sync(
+    source: GitSource, monkeypatch: Any
+) -> None:
+    """The next incremental sync imports requests created while the previous sync was running."""
+    previous_cursor = datetime(2026, 9, 28, 6, 45, tzinfo=dt_timezone.utc)
+    sync_started_at = datetime(2026, 9, 28, 6, 51, 36, tzinfo=dt_timezone.utc)
+    merge_request_updated_at = datetime(2026, 9, 28, 6, 51, 42, tzinfo=dt_timezone.utc)
+    sync_finished_at = datetime(2026, 9, 28, 6, 52, 58, tzinfo=dt_timezone.utc)
+    project = Project.objects.create(
+        source=source,
+        external_id="1",
+        name="api",
+        full_name="org/api",
+        web_url="https://github.com/org/api",
+        last_synced_at=previous_cursor,
+    )
+    item = {
+        "external_id": "external-2661",
+        "external_iid": "2661",
+        "title": "Created during sync",
+        "description": "",
+        "state": MergeRequest.OPENED,
+        "author_username": "user",
+        "author_external_id": "1",
+        "source_branch": "feature",
+        "source_sha": "a" * 40,
+        "target_branch": "main",
+        "web_url": "https://github.com/org/api/pull/2661",
+        "opened_at": merge_request_updated_at,
+        "external_updated_at": merge_request_updated_at,
+        "merged_at": None,
+        "closed_at": None,
+    }
+    clock = {"now": sync_started_at}
+    fetch_count = 0
+
+    def fetch_merge_requests(_project: Project, updated_after: datetime) -> list[dict[str, Any]]:
+        nonlocal fetch_count
+        fetch_count += 1
+        if fetch_count == 1:
+            clock["now"] = sync_finished_at
+            return []
+        return [item] if updated_after < merge_request_updated_at else []
+
+    adaptor = Mock(
+        fetch_merge_requests=Mock(side_effect=fetch_merge_requests),
+        fetch_mr_changes=Mock(return_value=[]),
+    )
+    monkeypatch.setattr("apps.sync.services.get_adaptor", lambda _source: adaptor)
+    monkeypatch.setattr("apps.sync.services.timezone.now", lambda: clock["now"])
+    monkeypatch.setattr(SyncService, "reconcile_active_merge_requests", Mock())
+    monkeypatch.setattr(SyncService, "sync_merge_request_discussion", Mock())
+
+    SyncService().sync_project(project)
+    SyncService().sync_project(project)
+
+    assert MergeRequest.objects.filter(project=project, external_iid="2661").exists()
+    assert adaptor.fetch_merge_requests.call_args_list[1].args[1] == sync_started_at
 
 
 def test_sync_project_queues_auto_review_after_commit_for_new_revision(
