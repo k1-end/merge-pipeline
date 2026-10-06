@@ -15,10 +15,18 @@ class ProjectAdmin(admin.ModelAdmin):
         "source",
         "is_active",
         "auto_review_enabled",
+        "auto_post_comments_enabled",
         "cache_status",
         "last_synced_at",
     )
-    list_filter = ("source", "source__source_type", "is_active", "auto_review_enabled", "cache_status")
+    list_filter = (
+        "source",
+        "source__source_type",
+        "is_active",
+        "auto_review_enabled",
+        "auto_post_comments_enabled",
+        "cache_status",
+    )
     search_fields = ("name", "full_name", "clone_url")
     readonly_fields = (
         "created_at",

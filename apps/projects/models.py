@@ -28,6 +28,11 @@ class Project(TimestampedModel):
     default_branch = models.CharField(max_length=100, default="main")
     is_active = models.BooleanField(default=True)
     auto_review_enabled = models.BooleanField(default=False)
+    auto_post_comments_enabled = models.BooleanField(
+        default=False,
+        verbose_name="Automatically post AI review comments",
+        help_text="Publish findings after successful manual or automatic AI reviews.",
+    )
     review_on_draft = models.BooleanField(default=False)
     ai_provider = models.ForeignKey(
         "reviews.AIProvider", on_delete=models.SET_NULL, null=True, blank=True, related_name="projects"

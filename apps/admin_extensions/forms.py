@@ -28,6 +28,7 @@ class ProjectForm(forms.ModelForm):
             "default_branch",
             "is_active",
             "auto_review_enabled",
+            "auto_post_comments_enabled",
             "review_on_draft",
             "ai_provider",
         )

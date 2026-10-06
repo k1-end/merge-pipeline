@@ -8,7 +8,7 @@ from time import monotonic
 from django.db import transaction
 from django.utils import timezone
 
-from apps.projects.models import MergeRequest
+from apps.projects.models import MergeRequest, Project
 from apps.reviews.execution_logs import ReviewExecutionLogRecorder
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.parsers import parse_review_response
@@ -139,6 +139,11 @@ class ReviewPipeline:
                     ReviewComment.objects.bulk_create(
                         [ReviewComment(review=review, **finding) for finding in findings]
                     )
+                    if (
+                        findings
+                        and Project.objects.filter(pk=mr.project_id, auto_post_comments_enabled=True).exists()
+                    ):
+                        transaction.on_commit(lambda: _queue_automatic_comments(review.pk))
             review.refresh_from_db()
         except Exception as exc:
             if log_recorder is not None:
@@ -164,6 +169,16 @@ class ReviewPipeline:
             review.refresh_from_db()
             raise
         return review
+
+
+def _queue_automatic_comments(review_id: int) -> None:
+    """Keep broker failures separate from successful, potentially paid AI execution."""
+    from apps.reviews.tasks import post_review_comments
+
+    try:
+        post_review_comments.delay(review_id, automatic=True)
+    except Exception:  # noqa: BLE001 - publishing must not cause the AI review to rerun
+        logger.exception("Could not queue automatic review comments", extra={"review_id": review_id})
 
 
 def _serialize_provider_response(raw_response: object) -> str:

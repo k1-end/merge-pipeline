@@ -106,5 +106,15 @@ The bundled `.opencode/agents/review.md` agent denies edits, web access, subagen
 and arbitrary shell commands while allowing read-only Git inspection. Each review
 fetches and pins both MR branches, then compares the target branch to the feature
 branch with three-dot diff semantics. Review output is expected to be JSON and is validated by the
-same parser used by the HTTP providers. Review comments are still published only by
-the separate `post_review_comments` task.
+same parser used by the HTTP providers.
+
+To automatically publish findings, edit the project and enable **Automatically post
+AI review comments** (`auto_post_comments_enabled`). This setting is off by default
+and independent of `auto_review_enabled`: it applies to successful manual and automatic
+reviews from any AI provider. Reviews without findings, failed reviews, and cancelled
+reviews do not trigger posting. Comments are published after commit by the separate
+`post_review_comments` task, with retries and duplicate protection. Disabling the
+setting also skips queued automatic posting jobs; manual posting remains available.
+If the broker is unavailable when posting is queued, the completed review and findings
+are retained, the enqueue failure is logged, and comments can be posted manually
+without rerunning the AI review. Apply migrations before deploying this feature.

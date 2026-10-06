@@ -107,6 +107,168 @@ def test_parse_review_response_accepts_fenced_json() -> None:
     assert findings[0]["file_path"] == "app.py"
 
 
+def test_auto_post_comments_setting_defaults_off(project: Project) -> None:
+    """Existing and new projects must opt in to automatic publishing."""
+    project.refresh_from_db()
+    assert project.auto_post_comments_enabled is False
+
+
+def test_project_form_exposes_auto_post_comments(project: Project) -> None:
+    """Operators can configure publishing independently of automatic reviews."""
+    from django.forms.models import model_to_dict
+
+    from apps.admin_extensions.forms import ProjectForm
+
+    form = ProjectForm(instance=project)
+    assert "auto_post_comments_enabled" in form.fields
+    data = model_to_dict(project)
+    data["auto_post_comments_enabled"] = True
+    form = ProjectForm(data=data, instance=project)
+    assert form.is_valid(), form.errors
+    form.save()
+    project.refresh_from_db()
+    assert project.auto_post_comments_enabled is True
+
+
+@pytest.mark.parametrize(
+    ("enabled", "has_findings", "outcome"),
+    [
+        (True, True, "success"),
+        (False, True, "success"),
+        (True, False, "success"),
+        (True, True, "cancelled"),
+        (True, True, "failed"),
+    ],
+)
+def test_pipeline_auto_post_comments(
+    merge_request: MergeRequest,
+    monkeypatch: Any,
+    django_capture_on_commit_callbacks: Any,
+    enabled: bool,
+    has_findings: bool,
+    outcome: str,
+) -> None:
+    """Only opted-in, successfully committed findings queue a publishing task."""
+    merge_request.project.auto_post_comments_enabled = enabled
+    merge_request.project.save()
+    provider = AIProvider.objects.create(
+        name="auto-post", provider_type=AIProvider.CUSTOM, model_name="test", is_default=True
+    )
+    response = Mock(
+        summary=(
+            '{"summary":"ok","findings":[{"file":"app.py","line":4,"type":"issue","message":"Fix this"}]}'
+            if has_findings
+            else '{"summary":"ok","findings":[]}'
+        ),
+        raw_response={},
+        input_tokens=1,
+        output_tokens=1,
+        cost_usd=0,
+        duration_ms=1,
+    )
+
+    def finish(_request: ReviewRequest) -> Mock:
+        if outcome == "failed":
+            raise ProviderError("Provider failed")
+        if outcome == "cancelled":
+            Review.objects.filter(merge_request=merge_request).update(status=Review.CANCELLED)
+        return response
+
+    fake_provider = Mock(estimate_cost=Mock(return_value=0), review=Mock(side_effect=finish))
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        provider.provider_type,
+        lambda config: fake_provider,
+    )
+    publish = Mock()
+    monkeypatch.setattr("apps.reviews.tasks.post_review_comments.delay", publish)
+    with django_capture_on_commit_callbacks(execute=True) as callbacks:
+        if outcome == "failed":
+            with pytest.raises(ProviderError):
+                ReviewPipeline().run_review(merge_request)
+        else:
+            review = ReviewPipeline().run_review(merge_request)
+        publish.assert_not_called()
+    if enabled and has_findings and outcome == "success":
+        assert len(callbacks) == 1
+        publish.assert_called_once_with(review.pk, automatic=True)
+        assert review.comments.count() == 1
+    else:
+        publish.assert_not_called()
+
+
+def test_auto_post_broker_failure_keeps_review_completed(
+    merge_request: MergeRequest,
+    monkeypatch: Any,
+    django_capture_on_commit_callbacks: Any,
+    caplog: Any,
+) -> None:
+    """A publishing enqueue failure must never rerun the paid AI review."""
+    merge_request.project.auto_post_comments_enabled = True
+    merge_request.project.save()
+    provider = AIProvider.objects.create(
+        name="auto-post", provider_type=AIProvider.CUSTOM, model_name="test", is_default=True
+    )
+    fake_provider = Mock(
+        estimate_cost=Mock(return_value=0),
+        review=Mock(
+            return_value=Mock(
+                summary='{"summary":"ok","findings":[{"file":"app.py","line":4,"type":"issue","message":"Fix this"}]}',
+                raw_response={},
+                input_tokens=1,
+                output_tokens=1,
+                cost_usd=0,
+                duration_ms=1,
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        provider.provider_type,
+        lambda config: fake_provider,
+    )
+    monkeypatch.setattr(
+        "apps.reviews.tasks.post_review_comments.delay", Mock(side_effect=RuntimeError("Broker unavailable"))
+    )
+    with django_capture_on_commit_callbacks(execute=True):
+        review = ReviewPipeline().run_review(merge_request)
+    review.refresh_from_db()
+    assert review.status == Review.COMPLETED
+    assert review.comments.count() == 1
+    assert "Could not queue automatic review comments" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("enabled", "status", "automatic", "should_post"),
+    [
+        (True, Review.COMPLETED, True, True),
+        (False, Review.COMPLETED, True, False),
+        (False, Review.COMPLETED, False, True),
+        (True, Review.CANCELLED, True, False),
+        (True, Review.FAILED, False, False),
+    ],
+)
+def test_post_comments_task_checks_status_and_auto_setting(
+    merge_request: MergeRequest,
+    monkeypatch: Any,
+    enabled: bool,
+    status: str,
+    automatic: bool,
+    should_post: bool,
+) -> None:
+    """Queued automatic publishing respects opt-out; manual posting stays available."""
+    from apps.reviews.tasks import post_review_comments
+
+    merge_request.project.auto_post_comments_enabled = enabled
+    merge_request.project.save()
+    provider = AIProvider.objects.create(name="posting", provider_type=AIProvider.CUSTOM, model_name="test")
+    review = Review.objects.create(merge_request=merge_request, provider=provider, status=status)
+    post = Mock(return_value=1)
+    monkeypatch.setattr(ReviewActionService, "post_comments", post)
+    assert post_review_comments.run(review.pk, automatic=automatic) == int(should_post)
+    assert post.call_count == int(should_post)
+
+
 def test_parse_review_response_rejects_invalid_json() -> None:
     """Malformed model output is not persisted as a completed review."""
     with pytest.raises(ReviewParseError):
