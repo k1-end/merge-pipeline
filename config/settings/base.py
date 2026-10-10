@@ -4,6 +4,8 @@ from pathlib import Path
 
 import environ
 
+from config.timezones import get_server_timezone
+
 # Base directory: three levels up from this file (config/settings/base.py)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -83,6 +85,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "apps.admin_extensions.context_processors.server_timezone",
             ],
         },
     },
@@ -128,7 +131,7 @@ LOGOUT_REDIRECT_URL = "admin:login"
 # Internationalization
 # ---------------------------------------------------------------------------
 LANGUAGE_CODE = env("LANGUAGE_CODE", default="en-us")
-TIME_ZONE = env("TIME_ZONE", default="UTC")
+TIME_ZONE = env("TIME_ZONE", default=get_server_timezone())
 
 USE_I18N = True
 USE_TZ = True

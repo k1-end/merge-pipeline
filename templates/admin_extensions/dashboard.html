@@ -61,8 +61,10 @@
 </div>
 {% endblock %}
 {% block extra_js %}
+{{ server_timezone|json_script:"server-timezone" }}
 <script>
   (() => {
+    const serverTimezone = JSON.parse(document.getElementById('server-timezone').textContent);
     const panel = document.getElementById('queue-status-panel');
     const healthDot = document.getElementById('queue-health-dot');
     const healthLabel = document.getElementById('queue-health-label');
@@ -166,7 +168,7 @@
       healthDot.className = `queue-health-dot queue-health-${snapshot.health}`;
       healthLabel.textContent = healthText[snapshot.health] || 'Queue status unknown';
       renderJobs(snapshot.jobs);
-      updated.textContent = `Last updated ${new Date(snapshot.updated_at).toLocaleTimeString()}`;
+      updated.textContent = `Last updated ${new Date(snapshot.updated_at).toLocaleTimeString(undefined, { timeZone: serverTimezone })}`;
     }
 
     function renderUnavailable() {

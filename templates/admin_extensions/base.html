@@ -1,4 +1,5 @@
-{% load static %}
+{% load static tz %}
+{% timezone server_timezone %}
 <!doctype html>
 <html lang="en" class="light-style layout-menu-fixed" dir="ltr" data-theme="theme-default">
   <head>
@@ -141,3 +142,4 @@
     {% block extra_js %}{% endblock %}
   </body>
 </html>
+{% endtimezone %}
