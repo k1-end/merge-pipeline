@@ -133,13 +133,21 @@ def test_parser_preserves_locationless_findings() -> None:
     assert findings[0]["line_number"] is None
 
 
-@pytest.mark.parametrize("changed_branch", ["head", "base", None])
+@pytest.mark.parametrize("gitlab", [False, True])
+@pytest.mark.parametrize("changed_branch", ["head", "base", "merge_base", None])
 def test_opencode_workspace_matches_snapshot(
-    merge_request: MergeRequest, monkeypatch: Any, changed_branch: str | None
+    merge_request: MergeRequest, monkeypatch: Any, changed_branch: str | None, gitlab: bool
 ) -> None:
-    """Agent workspaces must review the same source and target revision as the remote snapshot."""
+    """Workspaces use pinned revisions and preserve the original inline position SHAs."""
     from apps.reviews.pipeline import ReviewStateError
 
+    snapshot = review_snapshot()
+    if gitlab:
+        snapshot["revision"]["start_sha"] = "target"
+    monkeypatch.setattr(
+        "apps.reviews.pipeline.get_adaptor",
+        Mock(return_value=Mock(fetch_review_snapshot=Mock(return_value=snapshot))),
+    )
     provider_config = AIProvider.objects.create(
         name="snapshot-agent", provider_type=AIProvider.OPENCODE, model_name="test", is_default=True
     )
@@ -163,10 +171,13 @@ def test_opencode_workspace_matches_snapshot(
     )
 
     class Workspace:
-        def __init__(self, *args: Any) -> None:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            assert kwargs["head_sha"] == "head"
+            assert kwargs["base_sha"] == ("target" if gitlab else "base")
+            assert kwargs["merge_base_sha"] == ("base" if gitlab else "")
             self.head_sha = "changed" if changed_branch == "head" else "head"
-            self.base_sha = "changed" if changed_branch == "base" else "base"
-            self.merge_base_sha = "base"
+            self.base_sha = "changed" if changed_branch == "base" else kwargs["base_sha"]
+            self.merge_base_sha = "changed" if changed_branch == "merge_base" else "base"
 
         def __enter__(self) -> str:
             return "workspace"
@@ -175,14 +186,18 @@ def test_opencode_workspace_matches_snapshot(
             pass
 
     monkeypatch.setattr("apps.reviews.pipeline.ReviewWorkspace", Workspace)
-    if changed_branch:
-        with pytest.raises(ReviewStateError, match="branch changed"):
+    if changed_branch in {"head", "base"} or (gitlab and changed_branch == "merge_base"):
+        with pytest.raises(ReviewStateError, match="pinned snapshot"):
             ReviewPipeline().run_review(merge_request)
+        failed = Review.objects.get(merge_request=merge_request)
+        assert failed.diff_snapshot == snapshot
         provider.review.assert_not_called()
     else:
         review = ReviewPipeline().run_review(merge_request)
-        assert review.diff_snapshot == review_snapshot()
+        assert review.diff_snapshot == snapshot
+        assert review.base_sha == "base"
         assert review.head_sha == "head"
+        assert provider.review.call_args.args[0].base_sha == ("target" if gitlab else "base")
         assert provider.review.call_args.args[0].changes[0].diff == review_snapshot()["changes"][0]["diff"]
 
 
@@ -649,8 +664,13 @@ def test_manual_review_queue_reserves_pending_review_before_publish(
     apply_async.assert_called_once_with(args=(review.pk,), task_id=task_id)
 
 
-def test_review_workspace_uses_persistent_cache(project: Project, settings: Any, tmp_path: Path) -> None:
-    """A cached repository creates and removes a worktree without recloning."""
+@pytest.mark.parametrize(
+    "movement", ["none", "target", "source", "force_push", "deleted", "missing", "invalid_base"]
+)
+def test_review_workspace_uses_persistent_cache(
+    project: Project, settings: Any, tmp_path: Path, movement: str
+) -> None:
+    """Pinned worktrees survive branch movement and never substitute missing commits."""
     settings.REPOSITORY_CACHE_ROOT = str(tmp_path / "cache")
     settings.CREDENTIAL_ENCRYPTION_KEY = Fernet.generate_key().decode()
     origin = tmp_path / "origin"
@@ -678,7 +698,35 @@ def test_review_workspace_uses_persistent_cache(project: Project, settings: Any,
     main_sha = read_git(origin, "rev-parse", "main")
     fix_sha = read_git(origin, "rev-parse", "fix")
 
-    review_workspace = ReviewWorkspace(project, "fix", "main")
+    if movement in {"target", "source", "force_push"}:
+        if movement == "force_push":
+            run_git(origin, "checkout", "main")
+            run_git(origin, "branch", "-f", "fix", main_sha)
+        run_git(origin, "checkout", "main" if movement == "target" else "fix")
+        (origin / "app.py").write_text("new code\n", encoding="utf-8")
+        run_git(origin, "commit", "-am", "advance branch")
+    elif movement == "deleted":
+        run_git(origin, "checkout", "main")
+        run_git(origin, "branch", "-D", "fix")
+
+    review_workspace = ReviewWorkspace(
+        project,
+        "fix",
+        "main",
+        base_sha=main_sha,
+        head_sha="0" * 40 if movement == "missing" else fix_sha,
+        merge_base_sha=fix_sha if movement == "invalid_base" else main_sha,
+    )
+    if movement in {"missing", "invalid_base"}:
+        from apps.reviews.workspaces import WorkspaceError
+
+        with pytest.raises(WorkspaceError, match="snapshot commit|snapshot merge base"):
+            with review_workspace:
+                pytest.fail("Missing snapshot must not use the branch tip")
+        assert not cache.run(
+            ["git", "--git-dir", str(cache.path), "for-each-ref", "refs/merge-pipeline/workspaces"]
+        ).stdout.strip()
+        return
     with review_workspace as workspace:
         workspace_path = Path(workspace)
         assert (workspace_path / "app.py").read_text(encoding="utf-8") == "fix\n"
@@ -687,11 +735,33 @@ def test_review_workspace_uses_persistent_cache(project: Project, settings: Any,
         assert review_workspace.head_sha == fix_sha
         assert review_workspace.merge_base_sha == main_sha
         assert read_git(workspace_path, "diff", "--name-only", f"{main_sha}...{fix_sha}") == "app.py"
+        with ReviewWorkspace(project, "fix", "main", base_sha=main_sha, head_sha=fix_sha) as second:
+            assert second != workspace
+            assert read_git(Path(second), "rev-parse", "HEAD") == fix_sha
+        assert workspace_path.exists()
     assert not workspace_path.exists()
     assert cache.exists()
 
+    if movement in {"target", "source", "force_push"}:
+        latest_base = read_git(origin, "rev-parse", "main")
+        latest_head = read_git(origin, "rev-parse", "fix")
+        fresh_workspace = ReviewWorkspace(project, "fix", "main", base_sha=latest_base, head_sha=latest_head)
+        with fresh_workspace as fresh:
+            assert read_git(Path(fresh), "rev-parse", "HEAD") == latest_head
+            assert fresh_workspace.base_sha == latest_base
+
     project.clone_url = (tmp_path / "different-origin").as_uri()
     assert not cache.exists()
+
+
+@pytest.mark.parametrize("sha", ["", "main", "--upload-pack=evil", "a" * 39])
+def test_workspace_rejects_non_commit_revisions(project: Project, sha: str) -> None:
+    """Remote input must be a full SHA, never a Git option or mutable ref."""
+    from apps.reviews.workspaces import WorkspaceError
+
+    with pytest.raises(WorkspaceError, match="full commit SHAs"):
+        with ReviewWorkspace(project, "fix", "main", base_sha="a" * 40, head_sha=sha):
+            pytest.fail("Invalid snapshot must fail before cache access")
 
 
 def test_repository_cache_rejects_credentials_in_clone_url(

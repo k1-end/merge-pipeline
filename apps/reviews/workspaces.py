@@ -1,5 +1,6 @@
 """Disposable worktrees created from persistent repository caches."""
 
+import re
 import tempfile
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -53,49 +54,51 @@ Return only the requested JSON review result. Use repository-relative file paths
 class ReviewWorkspace(AbstractContextManager[str]):
     """Create a disposable worktree from a project's persistent bare cache."""
 
-    def __init__(self, project: Project, source_branch: str, target_branch: str):
-        """Initialize a workspace for the requested source and target branches."""
+    def __init__(
+        self,
+        project: Project,
+        source_branch: str,
+        target_branch: str,
+        *,
+        base_sha: str,
+        head_sha: str,
+        merge_base_sha: str = "",
+    ):
+        """Pin a workspace to immutable snapshot commits; branches are metadata only."""
         self.project = project
         self.source_branch = source_branch
         self.target_branch = target_branch
-        self.base_sha = ""
-        self.head_sha = ""
-        self.merge_base_sha = ""
+        self.base_sha = base_sha
+        self.head_sha = head_sha
+        self.merge_base_sha = merge_base_sha
         self._temporary: tempfile.TemporaryDirectory[str] | None = None
         self._workspace: Path | None = None
         self._cache = RepositoryCache(project)
         self._base_ref = ""
         self._head_ref = ""
+        self._merge_base_ref = ""
 
     def __enter__(self) -> str:
-        """Fetch and check out the source branch without cloning the repository."""
+        """Retrieve exact snapshot commits and check out its head without recloning."""
         try:
+            for sha in (self.base_sha, self.head_sha, self.merge_base_sha):
+                if sha and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+                    raise WorkspaceError("Review snapshot requires full commit SHAs")
+            if not self.base_sha or not self.head_sha:
+                raise WorkspaceError("Review snapshot requires full commit SHAs")
             self._cache.ensure_exists()
-            self._cache.run(["git", "check-ref-format", "--branch", self.source_branch])
-            self._cache.run(["git", "check-ref-format", "--branch", self.target_branch])
             self._temporary = tempfile.TemporaryDirectory(prefix="merge-review-")
             self._workspace = Path(self._temporary.name) / "checkout"
             namespace = f"refs/merge-pipeline/workspaces/{uuid4().hex}"
             self._base_ref = f"{namespace}/base"
             self._head_ref = f"{namespace}/head"
-            base_refspec = f"+refs/heads/{self.target_branch}:{self._base_ref}"
-            head_refspec = f"+refs/heads/{self.source_branch}:{self._head_ref}"
+            self._merge_base_ref = f"{namespace}/merge-base"
             with self._cache.git_environment() as environment, self._cache.locked():
-                self._cache.run(
-                    [
-                        "git",
-                        "--git-dir",
-                        str(self._cache.path),
-                        "fetch",
-                        "origin",
-                        base_refspec,
-                        head_refspec,
-                    ],
-                    environment,
-                )
-                self.base_sha = self._resolve_ref(self._base_ref)
-                self.head_sha = self._resolve_ref(self._head_ref)
-                self.merge_base_sha = self._cache.run(
+                self._pin_commit(self.base_sha, self._base_ref, environment)
+                self._pin_commit(self.head_sha, self._head_ref, environment)
+                if self.merge_base_sha:
+                    self._pin_commit(self.merge_base_sha, self._merge_base_ref, environment)
+                computed_merge_base = self._cache.run(
                     [
                         "git",
                         "--git-dir",
@@ -105,6 +108,9 @@ class ReviewWorkspace(AbstractContextManager[str]):
                         self.head_sha,
                     ]
                 ).stdout.strip()
+                if self.merge_base_sha and computed_merge_base != self.merge_base_sha:
+                    raise WorkspaceError("Review snapshot merge base does not match its pinned commits")
+                self.merge_base_sha = computed_merge_base
                 self._cache.run(
                     [
                         "git",
@@ -121,7 +127,7 @@ class ReviewWorkspace(AbstractContextManager[str]):
             agent_path.parent.mkdir(parents=True, exist_ok=True)
             agent_path.write_text(REVIEW_AGENT, encoding="utf-8")
             return str(self._workspace)
-        except RepositoryCacheError:
+        except (RepositoryCacheError, WorkspaceError):
             self.close()
             raise
         except Exception as exc:
@@ -134,9 +140,30 @@ class ReviewWorkspace(AbstractContextManager[str]):
             ["git", "--git-dir", str(self._cache.path), "rev-parse", f"{ref}^{{commit}}"]
         ).stdout.strip()
 
+    def _pin_commit(self, sha: str, ref: str, environment: dict[str, str]) -> None:
+        """Protect cached objects, or fetch the exact SHA without falling back to branch tips."""
+        git = ["git", "--git-dir", str(self._cache.path)]
+        try:
+            self._cache.run([*git, "cat-file", "-e", f"{sha}^{{commit}}"])
+        except RepositoryCacheError:
+            try:
+                self._cache.run([*git, "fetch", "--no-tags", "origin", f"+{sha}:{ref}"], environment)
+            except RepositoryCacheError as exc:
+                raise WorkspaceError(
+                    f"Could not retrieve review snapshot commit {sha}; run a fresh review or restore remote access"
+                ) from exc
+        self._cache.run([*git, "update-ref", ref, sha])
+        if self._resolve_ref(ref) != sha:
+            raise WorkspaceError("Review snapshot commit did not resolve to its exact SHA")
+
     def close(self) -> None:
         """Remove the disposable worktree while retaining the bare cache."""
-        if (self._workspace and self._workspace.exists()) or self._base_ref or self._head_ref:
+        if (
+            (self._workspace and self._workspace.exists())
+            or self._base_ref
+            or self._head_ref
+            or self._merge_base_ref
+        ):
             try:
                 with self._cache.locked():
                     if self._workspace and self._workspace.exists():
@@ -152,7 +179,7 @@ class ReviewWorkspace(AbstractContextManager[str]):
                             ]
                         )
                     self._cache.run(["git", "--git-dir", str(self._cache.path), "worktree", "prune"])
-                    for ref in (self._base_ref, self._head_ref):
+                    for ref in (self._base_ref, self._head_ref, self._merge_base_ref):
                         if ref:
                             self._cache.run(
                                 ["git", "--git-dir", str(self._cache.path), "update-ref", "-d", ref]
@@ -162,6 +189,7 @@ class ReviewWorkspace(AbstractContextManager[str]):
             self._workspace = None
             self._base_ref = ""
             self._head_ref = ""
+            self._merge_base_ref = ""
         if self._temporary:
             self._temporary.cleanup()
             self._temporary = None

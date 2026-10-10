@@ -96,15 +96,32 @@ class ReviewPipeline:
             )
             request.changes = [MRChange(**change) for change in review.diff_snapshot["changes"]]
             request.system_prompt += '\nReturn findings with file (repository-relative path), line (positive integer or null), side ("new" or "old"), type, severity, and message. Use exact diff line numbers where possible. Do not omit findings when their location is unavailable.'
-            if provider.estimate_cost(request) > self.budget_limit:
-                raise BudgetExceededError("Current remote diff exceeds configured budget")
             revision = review.diff_snapshot["revision"]
             request.head_sha = review.head_sha = revision["head_sha"]
             request.base_sha = review.base_sha = revision["base_sha"]
             review.source_branch = mr.source_branch
             review.target_branch = mr.target_branch
+            snapshot_saved = Review.objects.filter(pk=review.pk, status=Review.PROCESSING).update(
+                diff_snapshot=review.diff_snapshot,
+                source_branch=review.source_branch,
+                target_branch=review.target_branch,
+                base_sha=review.base_sha,
+                head_sha=review.head_sha,
+                updated_at=timezone.now(),
+            )
+            if not snapshot_saved:
+                raise ReviewStateError("Review is no longer processing")
+            if provider.estimate_cost(request) > self.budget_limit:
+                raise BudgetExceededError("Current remote diff exceeds configured budget")
             workspace = (
-                ReviewWorkspace(mr.project, mr.source_branch, mr.target_branch)
+                ReviewWorkspace(
+                    mr.project,
+                    mr.source_branch,
+                    mr.target_branch,
+                    base_sha=revision.get("start_sha", revision["base_sha"]),
+                    head_sha=revision["head_sha"],
+                    merge_base_sha=revision["base_sha"] if "start_sha" in revision else "",
+                )
                 if provider_config.provider_type == AIProvider.OPENCODE
                 else nullcontext(None)
             )
@@ -112,19 +129,18 @@ class ReviewPipeline:
                 request.workspace_path = workspace_path
                 if isinstance(workspace, ReviewWorkspace):
                     if workspace.head_sha != revision["head_sha"]:
-                        raise ReviewStateError(
-                            "Source branch changed before the review workspace was created"
-                        )
+                        raise ReviewStateError("Review workspace head does not match the pinned snapshot")
                     if workspace.base_sha != revision.get("start_sha", revision["base_sha"]):
+                        raise ReviewStateError("Review workspace target does not match the pinned snapshot")
+                    if "start_sha" in revision and workspace.merge_base_sha != revision["base_sha"]:
                         raise ReviewStateError(
-                            "Target branch changed before the review workspace was created"
+                            "Review workspace merge base does not match the pinned snapshot"
                         )
                     request.base_sha = workspace.base_sha
                     request.head_sha = workspace.head_sha
                     request.merge_base_sha = workspace.merge_base_sha
                     review.source_branch = mr.source_branch
                     review.target_branch = mr.target_branch
-                    review.base_sha = workspace.base_sha
                     review.head_sha = workspace.head_sha
                     review.merge_base_sha = workspace.merge_base_sha
                 response = provider.review(request)
@@ -186,6 +202,7 @@ class ReviewPipeline:
                 base_sha=review.base_sha,
                 head_sha=review.head_sha,
                 merge_base_sha=review.merge_base_sha,
+                diff_snapshot=review.diff_snapshot,
                 updated_at=failed_at,
             )
             review.refresh_from_db()

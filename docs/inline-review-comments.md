@@ -26,6 +26,23 @@ review. Publication checks its revision and diff against the current request.
 Stale reviews require a fresh review. Legacy reviews without snapshots are also
 blocked; existing remote IDs remain posted and are not reposted.
 
+OpenCode workspaces are pinned to that run's immutable snapshot, not the current
+branch tips. GitLab's `start_sha` identifies the recorded target commit and
+`base_sha` identifies the recorded merge base; both remain in the saved snapshot
+for inline positioning. The Review's `base_sha` preserves the API revision's
+meaning rather than being overwritten with the workspace target.
+
+The cache supplies existing commit objects or fetches missing objects by exact
+SHA. An unavailable commit or inconsistent merge base fails explicitly; the
+worker never substitutes newer branch tips. Snapshot metadata is persisted before
+workspace preparation, so failed runs remain diagnosable. Each subsequent review
+fetches a fresh API snapshot and can review newly pushed code. Target advancement
+alone does not invalidate the recorded diff.
+
+After deploying this code, restart the Celery review worker so it loads the updated
+pipeline. No schema migration is needed for snapshot-driven workspaces. Run a new
+review to retry a previously failed request; historical failures are not rewritten.
+
 Stable markers recover remote posts after interrupted local persistence. Database
 locks serialize publishers. Permanent provider rejections are blocked; transient
 creation failures are recorded as failed and retried by the publication task,
