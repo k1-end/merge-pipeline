@@ -488,6 +488,9 @@ def review_detail(request: HttpRequest, pk: int) -> HttpResponse:
         "unresolved_comments": [comment for comment in comments if not comment.is_resolved],
         "has_execution_logs": review.execution_log_chunks.exists(),
         "finding_count": len(review.findings or []),
+        "posted_count": sum(bool(comment.external_comment_id) for comment in comments),
+        "unposted_count": sum(not comment.external_comment_id for comment in comments),
+        "blocked_count": sum(comment.publication_status == "blocked" for comment in comments),
     }
     return render(request, "admin_extensions/review_detail.html", context)
 

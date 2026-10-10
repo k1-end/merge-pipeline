@@ -29,14 +29,18 @@ def _prepare_review_execution(review: Any, task_id: str | None) -> bool:
         return True
     if review.status != review.PROCESSING or not task_id or review.celery_task_id != task_id:
         return False
-    recovered = type(review).objects.filter(
-        pk=review.pk,
-        status=review.PROCESSING,
-        celery_task_id=task_id,
-    ).update(
-        status=review.PENDING,
-        error_message="",
-        completed_at=None,
+    recovered = (
+        type(review)
+        .objects.filter(
+            pk=review.pk,
+            status=review.PROCESSING,
+            celery_task_id=task_id,
+        )
+        .update(
+            status=review.PENDING,
+            error_message="",
+            completed_at=None,
+        )
     )
     if recovered:
         review.status = review.PENDING
@@ -65,9 +69,7 @@ def _retry_review(task: Any, review: Any, exc: Exception) -> None:
         from django.utils import timezone
 
         now = timezone.now()
-        type(review).objects.filter(
-            pk=review.pk, status__in=(review.PENDING, review.FAILED)
-        ).update(
+        type(review).objects.filter(pk=review.pk, status__in=(review.PENDING, review.FAILED)).update(
             status=review.FAILED,
             error_message=str(exc),
             completed_at=now,
@@ -233,6 +235,9 @@ def post_review_comments(self: Any, review_id: int, automatic: bool = False) -> 
     if automatic and not review.merge_request.project.auto_post_comments_enabled:
         return 0
     try:
-        return ReviewActionService.post_comments(review)
+        posted = ReviewActionService.post_comments(review)
     except Exception as exc:  # noqa: BLE001
         raise self.retry(exc=exc) from exc
+    if review.comments.filter(external_comment_id="", publication_status="failed").exists():
+        raise self.retry(exc=RuntimeError("Some inline comments failed; retrying pending publication"))
+    return posted

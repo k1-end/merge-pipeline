@@ -18,7 +18,9 @@ class AIProviderAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
     exclude = ("api_key_encrypted",)
 
-    def get_form(self, request: HttpRequest, obj: Any = None, change: bool = False, **kwargs: Any) -> type[forms.ModelForm]:
+    def get_form(
+        self, request: HttpRequest, obj: Any = None, change: bool = False, **kwargs: Any
+    ) -> type[forms.ModelForm]:
         """Add a write-only API key field without exposing stored ciphertext."""
         form = super().get_form(request, obj, **kwargs)
         form.base_fields["api_key"] = forms.CharField(required=not bool(obj), widget=forms.PasswordInput)
@@ -41,7 +43,19 @@ class ReviewAdmin(admin.ModelAdmin):
     list_display = ("merge_request", "provider", "status", "cost_usd", "duration_ms", "created_at")
     list_filter = ("status", "provider")
     search_fields = ("merge_request__title", "merge_request__external_iid")
-    readonly_fields = ("created_at", "updated_at", "completed_at", "input_tokens", "output_tokens", "cost_usd", "duration_ms")
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "completed_at",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "duration_ms",
+        "diff_snapshot",
+        "base_sha",
+        "head_sha",
+        "merge_base_sha",
+    )
     raw_id_fields = ("merge_request", "provider")
     actions = ("post_comments",)
 
@@ -56,8 +70,23 @@ class ReviewAdmin(admin.ModelAdmin):
 class ReviewCommentAdmin(admin.ModelAdmin):
     """Admin configuration for review findings."""
 
-    list_display = ("file_path", "line_number", "severity", "comment_type", "is_resolved", "review")
-    list_filter = ("comment_type", "severity", "is_resolved")
+    list_display = (
+        "file_path",
+        "line_number",
+        "publication_status",
+        "severity",
+        "comment_type",
+        "is_resolved",
+        "review",
+    )
+    list_filter = ("publication_status", "comment_type", "severity", "is_resolved")
     search_fields = ("file_path", "content", "external_comment_id")
-    readonly_fields = ("created_at", "updated_at", "external_comment_id")
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "external_comment_id",
+        "anchor",
+        "publication_status",
+        "publication_error",
+    )
     raw_id_fields = ("review",)

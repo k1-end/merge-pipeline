@@ -109,16 +109,30 @@ class GitHubAdaptor(BaseGitAdaptor):
         return [
             {
                 "file_path": item["filename"],
-                "old_path": "",
+                "old_path": item.get("previous_filename") or item["filename"],
                 "change_type": {
                     "added": "added",
                     "removed": "deleted",
                     "modified": "modified",
+                    "renamed": "renamed",
                 }.get(str(item.get("status") or ""), "modified"),
                 "diff": item.get("patch") or "",
             }
             for item in data
         ]
+
+    def fetch_review_snapshot(self, project: Any, mr_iid: str) -> dict:
+        """Guard paginated file fetching against concurrent pull-request changes."""
+        path = f"repos/{project.full_name}/pulls/{mr_iid}"
+        before = self.client.get_json(path)
+        changes = self.fetch_mr_changes(project, mr_iid)
+        after = self.client.get_json(path)
+        revision = {"head_sha": before["head"]["sha"], "base_sha": before["base"]["sha"]}
+        if revision != {"head_sha": after["head"]["sha"], "base_sha": after["base"]["sha"]}:
+            raise AdaptorConfigurationError("Pull request changed while fetching its review diff")
+        if not all(revision.values()):
+            raise AdaptorConfigurationError("Pull request revision is unavailable")
+        return {"revision": revision, "changes": changes}
 
     def fetch_mr_size(self, project: Any, mr_iid: str) -> tuple[int, int]:
         """Sum GitHub's native per-file line statistics across every page."""
@@ -247,29 +261,35 @@ class GitHubAdaptor(BaseGitAdaptor):
         )
         return hmac.compare_digest(signature, expected)
 
-    def create_comment(
-        self, project: Any, mr_iid: str, file_path: str, line: int | None, content: str
-    ) -> str:
-        """Create a GitHub pull request issue comment."""
+    def create_comment(self, project: Any, mr_iid: str, position: dict, revision: dict, content: str) -> str:
+        """Create a GitHub line-specific pull-request review comment."""
+        side = position.get("side") or ("new" if position.get("new_line") is not None else "old")
+        line = position.get(f"{side}_line")
+        if not line:
+            raise AdaptorConfigurationError("Inline comments require a code line")
         data = self.client.request_json(
-            "POST", f"repos/{project.full_name}/issues/{mr_iid}/comments", {"body": content}
+            "POST",
+            f"repos/{project.full_name}/pulls/{mr_iid}/comments",
+            {
+                "body": content,
+                "path": position["new_path"],
+                "line": line,
+                "side": "RIGHT" if side == "new" else "LEFT",
+                "commit_id": revision["head_sha"],
+            },
         )
         return str(data["id"])
 
     def find_comment_by_marker(self, project: Any, mr_iid: str, marker: str) -> str | None:
-        """Find a GitHub pull-request issue comment containing the marker."""
-        page = 1
-        while True:
-            comments = self.client.get_json(
-                f"repos/{project.full_name}/issues/{mr_iid}/comments",
-                params={"per_page": 100, "page": page},
-            )
-            for comment in comments:
+        """Recover inline comments first and retain legacy issue-comment lookup."""
+        for endpoint in (
+            f"repos/{project.full_name}/pulls/{mr_iid}/comments",
+            f"repos/{project.full_name}/issues/{mr_iid}/comments",
+        ):
+            for comment in self._fetch_pages(endpoint):
                 if marker in (comment.get("body") or ""):
                     return str(comment["id"])
-            if len(comments) < 100:
-                return None
-            page += 1
+        return None
 
     def update_mr_state(self, project: Any, mr_iid: str, action: str) -> bool:
         """Apply close or reopen to GitHub; merge uses the merge endpoint."""
@@ -295,8 +315,7 @@ class GitHubAdaptor(BaseGitAdaptor):
                 self.client.request_json("DELETE", f"{path}/{quote(old_label, safe='')}")
         if label not in names:
             repository_labels = {
-                str(item.get("name") or "")
-                for item in self._fetch_pages(f"repos/{project.full_name}/labels")
+                str(item.get("name") or "") for item in self._fetch_pages(f"repos/{project.full_name}/labels")
             }
             if label not in repository_labels:
                 self.client.request_json(

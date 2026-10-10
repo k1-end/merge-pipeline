@@ -130,6 +130,34 @@ class GitLabAdaptor(BaseGitAdaptor):
                     deletions += 1
         return additions, deletions
 
+    def fetch_review_snapshot(self, project: Any, mr_iid: str) -> dict:
+        """Fetch one GitLab diff version with its native position SHAs."""
+        path = f"projects/{project.external_id}/merge_requests/{mr_iid}"
+        data = self.client.get_json(f"{path}/changes", params={"access_raw_diffs": "true"})
+        refs = data.get("diff_refs") or {}
+        if data.get("overflow") or not all(refs.get(key) for key in ("base_sha", "start_sha", "head_sha")):
+            raise AdaptorConfigurationError("GitLab returned an incomplete review diff or revision")
+        return {
+            "revision": {key: refs[key] for key in ("base_sha", "start_sha", "head_sha")},
+            "changes": [
+                {
+                    "file_path": item["new_path"],
+                    "old_path": item.get("old_path") or item["new_path"],
+                    "change_type": (
+                        "deleted"
+                        if item.get("deleted_file")
+                        else (
+                            "renamed"
+                            if item.get("renamed_file")
+                            else "added" if item.get("new_file") else "modified"
+                        )
+                    ),
+                    "diff": item.get("diff") or "",
+                }
+                for item in data.get("changes", [])
+            ],
+        }
+
     def fetch_mr_comments(self, project: Any, mr_iid: str) -> list[dict]:
         """Fetch authored GitLab discussion notes with thread metadata."""
         comments = []
@@ -165,9 +193,7 @@ class GitLabAdaptor(BaseGitAdaptor):
                             "line_side": (
                                 "new"
                                 if position.get("new_line")
-                                else "old"
-                                if position.get("old_line")
-                                else ""
+                                else "old" if position.get("old_line") else ""
                             ),
                             "commit_sha": position.get("head_sha") or "",
                             "is_resolvable": bool(note.get("resolvable")),
@@ -204,27 +230,37 @@ class GitLabAdaptor(BaseGitAdaptor):
         """Compare GitLab's token header without timing leaks."""
         return bool(signature) and hmac.compare_digest(signature or "", self.source.webhook_secret)
 
-    def create_comment(
-        self, project: Any, mr_iid: str, file_path: str, line: int | None, content: str
-    ) -> str:
-        """Create a GitLab MR note."""
+    def create_comment(self, project: Any, mr_iid: str, position: dict, revision: dict, content: str) -> str:
+        """Create a line-specific GitLab discussion, never a general note."""
+        if not (position.get("new_line") or position.get("old_line")):
+            raise AdaptorConfigurationError("Inline comments require a code line")
+        payload = {
+            key: value
+            for key, value in position.items()
+            if key in {"old_path", "new_path", "old_line", "new_line"} and value is not None
+        }
+        payload.update({key: revision[key] for key in ("base_sha", "start_sha", "head_sha")})
+        payload["position_type"] = "text"
         data = self.client.request_json(
-            "POST", f"projects/{project.external_id}/merge_requests/{mr_iid}/notes", {"body": content}
+            "POST",
+            f"projects/{project.external_id}/merge_requests/{mr_iid}/discussions",
+            {"body": content, "position": payload},
         )
-        return str(data["id"])
+        return str(data["notes"][0]["id"])
 
     def find_comment_by_marker(self, project: Any, mr_iid: str, marker: str) -> str | None:
-        """Find a GitLab merge-request note containing the marker."""
+        """Find inline or legacy general notes through paginated discussions."""
         page = 1
         while True:
-            notes = self.client.get_json(
-                f"projects/{project.external_id}/merge_requests/{mr_iid}/notes",
+            discussions = self.client.get_json(
+                f"projects/{project.external_id}/merge_requests/{mr_iid}/discussions",
                 params={"per_page": 100, "page": page},
             )
-            for note in notes:
-                if marker in (note.get("body") or ""):
-                    return str(note["id"])
-            if len(notes) < 100:
+            for discussion in discussions:
+                for note in discussion.get("notes", []):
+                    if marker in (note.get("body") or ""):
+                        return str(note["id"])
+            if len(discussions) < 100:
                 return None
             page += 1
 
@@ -241,8 +277,7 @@ class GitLabAdaptor(BaseGitAdaptor):
         path = f"projects/{project.external_id}/merge_requests/{mr_iid}"
         data = self.client.get_json(path)
         names = {
-            str(item.get("title") if isinstance(item, dict) else item)
-            for item in data.get("labels", [])
+            str(item.get("title") if isinstance(item, dict) else item) for item in data.get("labels", [])
         }
         old_labels = sorted(name for name in names if name.startswith("size/") and name != label)
         payload: dict[str, str] = {"add_labels": label}

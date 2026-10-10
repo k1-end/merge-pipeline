@@ -136,8 +136,10 @@ class OpenCodeProvider(BaseAIProvider):
             "where relevant. Do not rely on an API-provided or prompt-embedded diff. "
             "Inspect the repository without modifying files. "
             "Return only JSON with this shape: "
-            '{"summary":"string","findings":[{"file":"path","line":1,"type":"issue",'
+            '{"summary":"string","findings":[{"file":"path","line":1,"side":"new","type":"issue",'
             '"severity":"high","message":"string"}]}.'
+            ' Use side "old" for deleted code and "new" for added/current code. '
+            "If no precise location is available, use line null and retain the finding."
         )
 
 

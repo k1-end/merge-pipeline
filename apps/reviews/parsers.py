@@ -22,12 +22,21 @@ def parse_review_response(content: str) -> tuple[str, list[dict]]:
         raise ReviewParseError("AI response has an invalid review schema")
     findings = []
     for finding in data.get("findings", []):
-        if not isinstance(finding, dict) or not finding.get("file") or not finding.get("message"):
+        if not isinstance(finding, dict) or not finding.get("message"):
             continue
         line = finding.get("line")
-        line_number = line if isinstance(line, int) and line > 0 else None
+        line_number = line if type(line) is int and line > 0 else None
         comment_type = finding.get("type", "issue")
         if comment_type not in {"issue", "suggestion", "praise", "question"}:
             comment_type = "issue"
-        findings.append({"file_path": str(finding["file"])[:1000], "line_number": line_number, "comment_type": comment_type, "severity": str(finding.get("severity", ""))[:20], "content": str(finding["message"])})
+        findings.append(
+            {
+                "file_path": str(finding.get("file") or "")[:1000],
+                "line_number": line_number,
+                "line_side": "old" if finding.get("side") == "old" else "new",
+                "comment_type": comment_type,
+                "severity": str(finding.get("severity", ""))[:20],
+                "content": str(finding["message"]),
+            }
+        )
     return str(data.get("summary", "")), findings

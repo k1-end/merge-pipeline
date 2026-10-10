@@ -8,13 +8,14 @@ from time import monotonic
 from django.db import transaction
 from django.utils import timezone
 
-from apps.projects.models import MergeRequest, Project
+from apps.projects.models import MergeRequest, MRChange, Project
 from apps.reviews.execution_logs import ReviewExecutionLogRecorder
 from apps.reviews.models import AIProvider, Review, ReviewComment
 from apps.reviews.parsers import parse_review_response
 from apps.reviews.providers import PROVIDER_MAP
 from apps.reviews.providers.base import ReviewRequest
 from apps.reviews.workspaces import ReviewWorkspace
+from apps.sources.factory import get_adaptor
 
 DEFAULT_SYSTEM_PROMPT = "You are a careful senior code reviewer. Return only JSON with summary and findings."
 DEFAULT_REVIEW_PROMPT = "Review this change.\nTitle: {title}\nDescription: {description}\nChanges:\n{changes}"
@@ -74,9 +75,9 @@ class ReviewPipeline:
             )
         else:
             started_at = timezone.now()
-            transitioned = Review.objects.filter(
-                pk=pending_review.pk, status=Review.PENDING
-            ).update(status=Review.PROCESSING, updated_at=started_at)
+            transitioned = Review.objects.filter(pk=pending_review.pk, status=Review.PENDING).update(
+                status=Review.PROCESSING, updated_at=started_at
+            )
             if not transitioned:
                 raise ReviewStateError("Queued review is no longer pending")
             review = pending_review
@@ -90,6 +91,18 @@ class ReviewPipeline:
                 "system",
                 f"Starting provider {provider_config.provider_type} with model {provider_config.model_name}\n",
             )
+            review.diff_snapshot = get_adaptor(mr.project.source).fetch_review_snapshot(
+                mr.project, mr.external_iid
+            )
+            request.changes = [MRChange(**change) for change in review.diff_snapshot["changes"]]
+            request.system_prompt += '\nReturn findings with file (repository-relative path), line (positive integer or null), side ("new" or "old"), type, severity, and message. Use exact diff line numbers where possible. Do not omit findings when their location is unavailable.'
+            if provider.estimate_cost(request) > self.budget_limit:
+                raise BudgetExceededError("Current remote diff exceeds configured budget")
+            revision = review.diff_snapshot["revision"]
+            request.head_sha = review.head_sha = revision["head_sha"]
+            request.base_sha = review.base_sha = revision["base_sha"]
+            review.source_branch = mr.source_branch
+            review.target_branch = mr.target_branch
             workspace = (
                 ReviewWorkspace(mr.project, mr.source_branch, mr.target_branch)
                 if provider_config.provider_type == AIProvider.OPENCODE
@@ -98,6 +111,14 @@ class ReviewPipeline:
             with workspace as workspace_path:
                 request.workspace_path = workspace_path
                 if isinstance(workspace, ReviewWorkspace):
+                    if workspace.head_sha != revision["head_sha"]:
+                        raise ReviewStateError(
+                            "Source branch changed before the review workspace was created"
+                        )
+                    if workspace.base_sha != revision.get("start_sha", revision["base_sha"]):
+                        raise ReviewStateError(
+                            "Target branch changed before the review workspace was created"
+                        )
                     request.base_sha = workspace.base_sha
                     request.head_sha = workspace.head_sha
                     request.merge_base_sha = workspace.merge_base_sha
@@ -133,6 +154,7 @@ class ReviewPipeline:
                     base_sha=review.base_sha,
                     head_sha=review.head_sha,
                     merge_base_sha=review.merge_base_sha,
+                    diff_snapshot=review.diff_snapshot,
                     updated_at=completed_at,
                 )
                 if completed:

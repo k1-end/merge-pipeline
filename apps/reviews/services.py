@@ -7,8 +7,10 @@ from uuid import uuid4
 from django.db import transaction
 from django.utils import timezone
 
+from apps.reviews.locations import NoCommentableLineError, resolve_location
 from apps.reviews.models import AIProvider, Review
 from apps.reviews.repository_cache import RepositoryCache, RepositoryCacheMissingError
+from apps.sources.exceptions import AdaptorConfigurationError, AdaptorConnectionError
 from apps.sources.factory import get_adaptor
 
 logger = logging.getLogger(__name__)
@@ -44,14 +46,10 @@ class ReviewQueueService:
             return None
         from apps.reviews.tasks import execute_ai_review
 
-        return ReviewQueueService._queue_review(
-            merge_request, execute_ai_review, allow_new_revision=True
-        )
+        return ReviewQueueService._queue_review(merge_request, execute_ai_review, allow_new_revision=True)
 
     @staticmethod
-    def _queue_review(
-        merge_request: Any, task: Any, *, allow_new_revision: bool = False
-    ) -> str:
+    def _queue_review(merge_request: Any, task: Any, *, allow_new_revision: bool = False) -> str:
         """Reserve a pending review transactionally, then publish its Celery task."""
         from apps.projects.models import MergeRequest
 
@@ -133,8 +131,11 @@ class ReviewActionService:
     def post_comments(review: Review) -> int:
         """Post pending comments without duplicating remote comments after retries."""
         review = Review.objects.select_related("merge_request__project__source").get(pk=review.pk)
+        # Serialize publishers on the parent as well as each individual finding.
+        Review.objects.select_for_update().get(pk=review.pk)
         adaptor = get_adaptor(review.merge_request.project.source)
         posted = 0
+        snapshot = None
         for comment in review.comments.select_for_update().filter(external_comment_id=""):
             marker = ReviewActionService._comment_marker(comment)
             external_id = adaptor.find_comment_by_marker(
@@ -144,17 +145,72 @@ class ReviewActionService:
             )
             if external_id is not None:
                 comment.external_comment_id = external_id
-                comment.save(update_fields=["external_comment_id", "updated_at"])
+                comment.publication_status = "posted"
+                comment.publication_error = ""
+                comment.save(
+                    update_fields=[
+                        "external_comment_id",
+                        "publication_status",
+                        "publication_error",
+                        "updated_at",
+                    ]
+                )
                 continue
-            external_id = adaptor.create_comment(
-                review.merge_request.project,
-                review.merge_request.external_iid,
-                comment.file_path,
-                comment.line_number,
-                f"{comment.content}\n\n{marker}",
-            )
+            if snapshot is None:
+                snapshot = adaptor.fetch_review_snapshot(
+                    review.merge_request.project, review.merge_request.external_iid
+                )
+            if not review.diff_snapshot or snapshot != review.diff_snapshot:
+                comment.publication_status = "blocked"
+                comment.publication_error = (
+                    "Reviewed diff is stale or unavailable; run a fresh review before inline publication"
+                )
+                comment.save(update_fields=["publication_status", "publication_error", "updated_at"])
+                continue
+            try:
+                position = resolve_location(
+                    snapshot["changes"], comment.file_path, comment.line_number, comment.line_side
+                )
+            except NoCommentableLineError as exc:
+                comment.publication_status = "blocked"
+                comment.publication_error = str(exc)
+                comment.save(update_fields=["publication_status", "publication_error", "updated_at"])
+                continue
+            content = comment.content
+            if position["fallback"]:
+                affected_file = comment.file_path.replace("`", "") or "the repository"
+                content = f"**File-level finding for `{affected_file}`; anchored here because no usable specific line was provided.**\n\n{content}"
+            try:
+                external_id = adaptor.create_comment(
+                    review.merge_request.project,
+                    review.merge_request.external_iid,
+                    position,
+                    snapshot["revision"],
+                    f"{content}\n\n{marker}",
+                )
+            except (AdaptorConfigurationError, AdaptorConnectionError) as exc:
+                comment.anchor = position
+                comment.publication_status = (
+                    "blocked" if isinstance(exc, AdaptorConfigurationError) else "failed"
+                )
+                comment.publication_error = str(exc)
+                comment.save(
+                    update_fields=["anchor", "publication_status", "publication_error", "updated_at"]
+                )
+                continue
             comment.external_comment_id = external_id
-            comment.save(update_fields=["external_comment_id", "updated_at"])
+            comment.anchor = position
+            comment.publication_status = "posted"
+            comment.publication_error = ""
+            comment.save(
+                update_fields=[
+                    "external_comment_id",
+                    "anchor",
+                    "publication_status",
+                    "publication_error",
+                    "updated_at",
+                ]
+            )
             posted += 1
         return posted
 

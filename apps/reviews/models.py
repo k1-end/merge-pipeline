@@ -81,6 +81,7 @@ class Review(TimestampedModel):
     base_sha = models.CharField(max_length=64, blank=True)
     head_sha = models.CharField(max_length=64, blank=True)
     merge_base_sha = models.CharField(max_length=64, blank=True)
+    diff_snapshot = models.JSONField(default=dict, blank=True)
 
     class Meta:
         """Database mapping and review lookup indexes."""
@@ -98,6 +99,14 @@ class ReviewComment(TimestampedModel):
     review = models.ForeignKey(Review, on_delete=models.CASCADE, related_name="comments")
     file_path = models.CharField(max_length=1000)
     line_number = models.PositiveIntegerField(null=True, blank=True)
+    line_side = models.CharField(max_length=3, default="new", choices=(("new", "New"), ("old", "Old")))
+    anchor = models.JSONField(default=dict, blank=True)
+    publication_status = models.CharField(
+        max_length=20,
+        default="pending",
+        choices=(("pending", "Pending"), ("blocked", "Blocked"), ("posted", "Posted"), ("failed", "Failed")),
+    )
+    publication_error = models.TextField(blank=True)
     comment_type = models.CharField(
         max_length=20,
         choices=(

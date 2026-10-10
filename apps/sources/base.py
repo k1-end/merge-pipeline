@@ -46,6 +46,10 @@ class BaseGitAdaptor(ABC):
         """Return normalized changed files for a merge request."""
 
     @abstractmethod
+    def fetch_review_snapshot(self, project: Any, mr_iid: str) -> dict:
+        """Return a consistent revision and changed-file snapshot for inline reviews."""
+
+    @abstractmethod
     def fetch_mr_size(self, project: Any, mr_iid: str) -> tuple[int, int]:
         """Return additions and deletions for a merge request."""
 
@@ -66,10 +70,8 @@ class BaseGitAdaptor(ABC):
         """Verify a provider webhook signature."""
 
     @abstractmethod
-    def create_comment(
-        self, project: Any, mr_iid: str, file_path: str, line: int | None, content: str
-    ) -> str:
-        """Create a review comment and return its external identifier."""
+    def create_comment(self, project: Any, mr_iid: str, position: dict, revision: dict, content: str) -> str:
+        """Create an inline review comment and return its note identifier."""
 
     @abstractmethod
     def find_comment_by_marker(self, project: Any, mr_iid: str, marker: str) -> str | None:
