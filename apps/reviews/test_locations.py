@@ -48,3 +48,16 @@ def test_renamed_paths_are_preserved():
     """Provider positions contain both rename paths."""
     location = resolve_location([{"file_path": "new.py", "old_path": "old.py", "diff": "@@ -1 +1 @@\n same"}], "old.py", 1)
     assert (location["old_path"], location["new_path"]) == ("old.py", "new.py")
+
+
+def test_old_context_side_is_not_lost():
+    """A finding on the old side retains its old coordinate even for context."""
+    location = resolve_location([{"file_path": "app.py", "diff": "@@ -10 +20 @@\n same"}], "app.py", 10, "old")
+    assert location["side"] == "old"
+    assert location["old_line"] == 10
+
+
+def test_truncated_hunk_is_not_commentable():
+    """Incomplete patches cannot supply speculative anchors."""
+    with pytest.raises(NoCommentableLineError):
+        resolve_location([{"file_path": "app.py", "diff": "@@ -1,3 +1,3 @@\n first"}], "app.py", 1)

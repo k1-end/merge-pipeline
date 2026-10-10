@@ -78,8 +78,13 @@ def project(db: Any) -> Project:
     )
 
 
+def review_snapshot() -> dict:
+    """Provide an immutable remote revision without network calls."""
+    return {"revision": {"head_sha": "head", "base_sha": "base"}, "changes": [{"file_path": "app.py", "old_path": "app.py", "change_type": "modified", "diff": "@@ -1,2 +1,2 @@\n first\n second"}]}
+
+
 @pytest.fixture
-def merge_request(project: Project) -> MergeRequest:
+def merge_request(project: Project, monkeypatch: Any) -> MergeRequest:
     """Create a merge request with one changed file."""
     mr = MergeRequest.objects.create(
         project=project,
@@ -95,6 +100,7 @@ def merge_request(project: Project) -> MergeRequest:
         external_updated_at=datetime.now(UTC),
     )
     MRChange.objects.create(merge_request=mr, file_path="app.py", change_type="modified", diff="@@")
+    monkeypatch.setattr("apps.reviews.pipeline.get_adaptor", Mock(return_value=Mock(fetch_review_snapshot=Mock(return_value=review_snapshot()))))
     return mr
 
 
@@ -105,6 +111,54 @@ def test_parse_review_response_accepts_fenced_json() -> None:
     )
     assert summary == "Looks good"
     assert findings[0]["file_path"] == "app.py"
+
+
+def test_parser_preserves_locationless_findings() -> None:
+    """Missing files and boolean line values remain publishable via fallbacks."""
+    _, findings = parse_review_response('{"findings":[{"message":"Repository concern","line":true}]}')
+    assert findings[0]["file_path"] == ""
+    assert findings[0]["line_number"] is None
+
+
+@pytest.mark.parametrize("file_path,line", [("app.py", None), ("logo.png", None), ("", None), ("app.py", 900)])
+def test_post_comments_fallbacks(merge_request: MergeRequest, monkeypatch: Any, file_path: str, line: int | None) -> None:
+    """Every finding receives a clearly labelled inline fallback."""
+    provider = AIProvider.objects.create(name="fallback", provider_type="custom", model_name="mock")
+    review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED, diff_snapshot=review_snapshot())
+    comment = ReviewComment.objects.create(review=review, file_path=file_path, line_number=line, comment_type="issue", content="Fix")
+    adaptor = Mock(find_comment_by_marker=Mock(return_value=None), create_comment=Mock(return_value="42"), fetch_review_snapshot=Mock(return_value=review_snapshot()))
+    monkeypatch.setattr("apps.reviews.services.get_adaptor", lambda source: adaptor)
+    assert ReviewActionService.post_comments(review) == 1
+    comment.refresh_from_db()
+    assert comment.file_path == file_path
+    assert comment.anchor["new_line"] == 1
+    assert comment.publication_status == "posted"
+    assert "File-level finding" in adaptor.create_comment.call_args.args[-1]
+
+
+@pytest.mark.parametrize("reason", ["stale", "legacy", "binary", "rejected"])
+def test_inline_blocking_is_visible(merge_request: MergeRequest, monkeypatch: Any, reason: str) -> None:
+    """Impossible, stale, and rejected positions never become general comments."""
+    from apps.sources.exceptions import AdaptorConfigurationError
+
+    snapshot = review_snapshot()
+    if reason == "binary":
+        snapshot["changes"][0]["diff"] = ""
+    provider = AIProvider.objects.create(name="blocking", provider_type="custom", model_name="mock")
+    review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED, diff_snapshot={} if reason == "legacy" else snapshot)
+    comment = ReviewComment.objects.create(review=review, file_path="app.py", comment_type="issue", content="Fix")
+    current = review_snapshot() if reason == "stale" else snapshot
+    if reason == "stale":
+        current["revision"]["head_sha"] = "new-head"
+    adaptor = Mock(find_comment_by_marker=Mock(return_value=None), fetch_review_snapshot=Mock(return_value=current), create_comment=Mock(side_effect=AdaptorConfigurationError("HTTP 422")))
+    monkeypatch.setattr("apps.reviews.services.get_adaptor", lambda source: adaptor)
+    assert ReviewActionService.post_comments(review) == 0
+    comment.refresh_from_db()
+    assert comment.publication_status == "blocked"
+    assert comment.publication_error
+    assert not comment.external_comment_id
+    if reason != "rejected":
+        adaptor.create_comment.assert_not_called()
 
 
 def test_auto_post_comments_setting_defaults_off(project: Project) -> None:
@@ -725,7 +779,7 @@ def test_pipeline_enforces_budget(merge_request: MergeRequest) -> None:
 def test_post_comments_is_idempotent(merge_request: MergeRequest, monkeypatch: Any) -> None:
     """Already-posted comments are not sent again."""
     provider = AIProvider.objects.create(name="actions", provider_type="custom", model_name="mock")
-    review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED)
+    review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED, diff_snapshot=review_snapshot())
     pending = ReviewComment.objects.create(
         review=review, file_path="app.py", line_number=2, comment_type="issue", content="Fix"
     )
@@ -733,6 +787,7 @@ def test_post_comments_is_idempotent(merge_request: MergeRequest, monkeypatch: A
         review=review, file_path="old.py", comment_type="issue", content="Done", external_comment_id="100"
     )
     adaptor = Mock(find_comment_by_marker=Mock(return_value=None), create_comment=Mock(return_value="101"))
+    adaptor.fetch_review_snapshot.return_value = review_snapshot()
     monkeypatch.setattr("apps.reviews.services.get_adaptor", lambda source: adaptor)
     assert ReviewActionService.post_comments(review) == 1
     pending.refresh_from_db()
