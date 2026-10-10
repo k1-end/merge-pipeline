@@ -30,5 +30,28 @@ URL-field deprecation warnings remain. RED/GREEN evidence is preserved here rath
 than in separate checkpoint commits.
 
 `TIME_ZONE` explicitly overrides system detection. System configuration is read
-at application startup; restart application processes after changing it. Containers
-use their own system timezone; configure `TIME_ZONE` if it should match the host.
+at application startup; recreate application containers after changing the host
+timezone. Compose now supplies host timezone files as described below.
+
+## Docker host timezone inheritance follow-up
+
+Journey: application containers automatically load the Docker host's timezone,
+without setting a timezone manually in `.env`.
+
+- RED: `.venv/bin/pytest apps/admin_extensions/test_timezones.py -q` reported
+  3 failures and 11 passes: both Compose files lacked mounts, and an image UTC
+  symlink took precedence over the host's timezone name.
+- Fix: read-only `/etc/localtime` and `/etc/timezone` mounts on all four application
+  services in both Compose files; prefer the timezone file over the localtime
+  symlink name. The Linux host must provide both files. Explicit environment
+  overrides remain supported.
+- GREEN: `.venv/bin/pytest --cov --cov-report=term -q` passed 175 tests and
+  7 subtests, with 86.52% overall coverage.
+- Both `docker compose -f .docker/{dev,prod}/docker-compose.yml config --quiet`
+  validations passed (run separately).
+- Rebuilt/recreated the dev web, worker, size-labeling worker and beat services
+  using `docker compose -f .docker/dev/docker-compose.yml up -d --build --no-deps web worker size-labeling-worker beat`.
+- Verified each running service's Django `TIME_ZONE` is `Asia/Tehran`, the rendered
+  dashboard contains the same browser clock timezone, and the web returns HTTP 200.
+- Production configuration was validated but not deployed. MySQL and Redis were
+  not recreated. No browser E2E test was run.

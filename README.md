@@ -46,6 +46,14 @@ cp .env.example .env
 docker compose -f .docker/dev/docker-compose.yml up --build
 ```
 
+Both Compose configurations automatically inherit the Linux Docker host's timezone
+by mounting `/etc/localtime` and `/etc/timezone` read-only into the web, worker,
+size-labeling worker, and scheduler containers. The host must provide both files,
+with an IANA timezone name in `/etc/timezone` (for example, `Asia/Tehran`). No
+hardcoded timezone is needed. An explicit `TIME_ZONE` in the application's
+environment still overrides automatic detection. Recreate the application
+containers after changing the host timezone.
+
 ## Tooling
 
 ```bash

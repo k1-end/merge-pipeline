@@ -1,6 +1,8 @@
 """Regression coverage for server-local dashboard timestamps."""
 
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -46,7 +48,9 @@ def test_dashboard_dates_and_live_clock_use_server_timezone(server_zone, timesta
     [
         ("Europe/Berlin", "/usr/share/zoneinfo/Asia/Tehran", "UTC", "Europe/Berlin"),
         (":Asia/Tehran", "/etc/localtime", "UTC", "Asia/Tehran"),
-        (None, "/usr/share/zoneinfo/Asia/Tehran", "UTC", "Asia/Tehran"),
+        (None, "/usr/share/zoneinfo/Asia/Tehran", "Asia/Tehran", "Asia/Tehran"),
+        (None, "/usr/share/zoneinfo/Etc/UTC", "Asia/Tehran", "Asia/Tehran"),
+        (None, "/usr/share/zoneinfo/Asia/Tehran", "Invalid/Zone", "Asia/Tehran"),
         (None, "/etc/localtime", "Europe/Berlin\n", "Europe/Berlin"),
         (None, "/etc/localtime", "Invalid/Zone", "UTC"),
     ],
@@ -81,3 +85,15 @@ def test_system_timezone_missing_files(monkeypatch):
     monkeypatch.setattr(Path, "read_text", missing)
 
     assert get_server_timezone() == "UTC"
+
+
+@pytest.mark.parametrize("mode", ["dev", "prod"])
+def test_compose_apps_mount_host_timezone_read_only(mode):
+    """Every Django/Celery service must inherit the host timezone configuration."""
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / ".docker" / mode / "docker-compose.yml").read_text()
+    for service in ("web", "worker", "size-labeling-worker", "beat"):
+        section = re.split(r"\n  \S", compose.split(f"\n  {service}:\n", 1)[1], maxsplit=1)[0]
+        # Service blocks contain more deeply indented fields, not sibling services.
+        assert "- /etc/localtime:/etc/localtime:ro" in section
+        assert "- /etc/timezone:/etc/timezone:ro" in section

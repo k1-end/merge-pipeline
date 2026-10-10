@@ -53,6 +53,8 @@ services:
     volumes:
       - ../..:/app
       - dev_repository_cache:/var/lib/merge-pipeline:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -77,6 +79,8 @@ services:
       - ../..:/app
       - ./opencode.jsonc:/etc/opencode/opencode.jsonc:ro
       - dev_repository_cache:/var/lib/merge-pipeline
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       db:
         condition: service_healthy
@@ -93,6 +97,8 @@ services:
     environment: *app-environment
     volumes:
       - ../..:/app
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       db:
         condition: service_healthy
@@ -109,6 +115,8 @@ services:
     environment: *app-environment
     volumes:
       - ../..:/app
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       db:
         condition: service_healthy
