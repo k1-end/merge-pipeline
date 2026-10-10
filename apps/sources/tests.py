@@ -116,7 +116,9 @@ def test_gitlab_find_comment_by_marker(source: GitSource, credential: GitSourceC
     """GitLab comment lookup scans discussions for the idempotency marker."""
     adaptor = GitLabAdaptor(source, credential)
     adaptor.client = Mock()
-    adaptor.client.get_json.return_value = [{"id": "thread", "notes": [{"id": 42, "body": "message\n<!-- marker -->"}]}]
+    adaptor.client.get_json.return_value = [
+        {"id": "thread", "notes": [{"id": 42, "body": "message\n<!-- marker -->"}]}
+    ]
 
     result = adaptor.find_comment_by_marker(SimpleNamespace(external_id="10"), "7", "<!-- marker -->")
 
