@@ -332,6 +332,8 @@ class DashboardAccessTests(TestCase):
             comment_type="suggestion",
             severity="low",
             content="Consider adding a regression test.",
+            publication_status="blocked",
+            publication_error="No commentable text lines",
         )
 
         response = self.client.get(reverse("admin_extensions:review_detail", args=[review.pk]))
@@ -341,6 +343,8 @@ class DashboardAccessTests(TestCase):
         self.assertContains(response, "The change is focused and ready for review.")
         self.assertContains(response, "templates/reviews.html")
         self.assertContains(response, "Review detail model")
+        self.assertContains(response, "Publication incomplete")
+        self.assertContains(response, "No commentable text lines")
         self.assertContains(
             response, reverse("admin_extensions:merge_request_detail", args=[merge_request.pk])
         )
