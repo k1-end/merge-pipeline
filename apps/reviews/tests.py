@@ -133,15 +133,83 @@ def test_parser_preserves_locationless_findings() -> None:
     assert findings[0]["line_number"] is None
 
 
-def test_transient_publication_failure_preserves_partial_success(merge_request: MergeRequest, monkeypatch: Any) -> None:
+@pytest.mark.parametrize("changed_branch", ["head", "base", None])
+def test_opencode_workspace_matches_snapshot(
+    merge_request: MergeRequest, monkeypatch: Any, changed_branch: str | None
+) -> None:
+    """Agent workspaces must review the same source and target revision as the remote snapshot."""
+    from apps.reviews.pipeline import ReviewStateError
+
+    provider_config = AIProvider.objects.create(
+        name="snapshot-agent", provider_type=AIProvider.OPENCODE, model_name="test", is_default=True
+    )
+    provider = Mock(
+        estimate_cost=Mock(return_value=0),
+        review=Mock(
+            return_value=Mock(
+                summary='{"summary":"ok","findings":[]}',
+                raw_response={},
+                input_tokens=0,
+                output_tokens=0,
+                cost_usd=0,
+                duration_ms=1,
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        __import__("apps.reviews.pipeline", fromlist=["PROVIDER_MAP"]).PROVIDER_MAP,
+        provider_config.provider_type,
+        lambda config: provider,
+    )
+
+    class Workspace:
+        def __init__(self, *args: Any) -> None:
+            self.head_sha = "changed" if changed_branch == "head" else "head"
+            self.base_sha = "changed" if changed_branch == "base" else "base"
+            self.merge_base_sha = "base"
+
+        def __enter__(self) -> str:
+            return "workspace"
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    monkeypatch.setattr("apps.reviews.pipeline.ReviewWorkspace", Workspace)
+    if changed_branch:
+        with pytest.raises(ReviewStateError, match="branch changed"):
+            ReviewPipeline().run_review(merge_request)
+        provider.review.assert_not_called()
+    else:
+        review = ReviewPipeline().run_review(merge_request)
+        assert review.diff_snapshot == review_snapshot()
+        assert review.head_sha == "head"
+        assert provider.review.call_args.args[0].changes[0].diff == review_snapshot()["changes"][0]["diff"]
+
+
+def test_transient_publication_failure_preserves_partial_success(
+    merge_request: MergeRequest, monkeypatch: Any
+) -> None:
     """A failed remote post does not roll back successful publication or hide its error."""
     from apps.sources.exceptions import AdaptorConnectionError
 
     provider = AIProvider.objects.create(name="partial", provider_type="custom", model_name="mock")
-    review = Review.objects.create(merge_request=merge_request, provider=provider, status=Review.COMPLETED, diff_snapshot=review_snapshot())
-    failed = ReviewComment.objects.create(review=review, file_path="app.py", comment_type="issue", content="First")
-    successful = ReviewComment.objects.create(review=review, file_path="app.py", comment_type="issue", content="Second")
-    adaptor = Mock(find_comment_by_marker=Mock(return_value=None), fetch_review_snapshot=Mock(return_value=review_snapshot()), create_comment=Mock(side_effect=[AdaptorConnectionError("Remote unavailable"), "42"]))
+    review = Review.objects.create(
+        merge_request=merge_request,
+        provider=provider,
+        status=Review.COMPLETED,
+        diff_snapshot=review_snapshot(),
+    )
+    failed = ReviewComment.objects.create(
+        review=review, file_path="app.py", comment_type="issue", content="First"
+    )
+    successful = ReviewComment.objects.create(
+        review=review, file_path="app.py", comment_type="issue", content="Second"
+    )
+    adaptor = Mock(
+        find_comment_by_marker=Mock(return_value=None),
+        fetch_review_snapshot=Mock(return_value=review_snapshot()),
+        create_comment=Mock(side_effect=[AdaptorConnectionError("Remote unavailable"), "42"]),
+    )
     monkeypatch.setattr("apps.reviews.services.get_adaptor", lambda source: adaptor)
     assert ReviewActionService.post_comments(review) == 1
     failed.refresh_from_db()
@@ -149,6 +217,20 @@ def test_transient_publication_failure_preserves_partial_success(merge_request: 
     assert failed.publication_status == "failed"
     assert failed.publication_error == "Remote unavailable"
     assert successful.external_comment_id == "42"
+    from apps.reviews.tasks import post_review_comments
+
+    retry = Mock(side_effect=Retry())
+    monkeypatch.setattr(post_review_comments, "retry", retry)
+    adaptor.create_comment.side_effect = [AdaptorConnectionError("Remote unavailable")]
+    with pytest.raises(Retry):
+        post_review_comments.run(review.pk)
+    retry.assert_called_once()
+    adaptor.create_comment.side_effect = None
+    adaptor.create_comment.return_value = "43"
+    assert post_review_comments.run(review.pk) == 1
+    failed.refresh_from_db()
+    assert failed.publication_status == "posted"
+    assert failed.publication_error == ""
 
 
 @pytest.mark.parametrize(
@@ -441,6 +523,7 @@ def test_opencode_provider_invokes_read_only_agent(monkeypatch: Any, settings: A
         "json",
     ]
     assert f"git diff --find-renames {'a' * 40}...{'b' * 40}" in command[-1]
+    assert '"side":"new"' in command[-1]
 
 
 def test_opencode_provider_emits_complete_untruncated_output(monkeypatch: Any, settings: Any) -> None:

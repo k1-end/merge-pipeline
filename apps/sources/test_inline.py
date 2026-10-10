@@ -96,3 +96,55 @@ def test_gitlab_snapshot_requires_complete_revision() -> None:
     adaptor.client.get_json.return_value = {"changes": [], "diff_refs": {"head_sha": "head"}}
     with pytest.raises(AdaptorConfigurationError, match="incomplete"):
         adaptor.fetch_review_snapshot(SimpleNamespace(external_id="1"), "2")
+
+
+def test_gitlab_snapshot_preserves_rename_and_native_refs() -> None:
+    """GitLab position metadata and rename paths belong to the same response."""
+    adaptor = object.__new__(GitLabAdaptor)
+    adaptor.client = Mock()
+    refs = {"head_sha": "head", "base_sha": "base", "start_sha": "start"}
+    adaptor.client.get_json.return_value = {
+        "diff_refs": refs,
+        "changes": [
+            {"new_path": "new.py", "old_path": "old.py", "renamed_file": True, "diff": "@@ -1 +1 @@\n same"}
+        ],
+    }
+    snapshot = adaptor.fetch_review_snapshot(SimpleNamespace(external_id="1"), "2")
+    assert snapshot["revision"] == refs
+    assert snapshot["changes"][0]["old_path"] == "old.py"
+    assert snapshot["changes"][0]["change_type"] == "renamed"
+
+
+def test_github_snapshot_preserves_rename_and_revision() -> None:
+    """GitHub paginated files use stable head/base SHAs and rename paths."""
+    adaptor = object.__new__(GitHubAdaptor)
+    adaptor.client = Mock()
+    revision = {"head": {"sha": "head"}, "base": {"sha": "base"}}
+    adaptor.client.get_json.side_effect = [
+        revision,
+        [
+            {
+                "filename": "new.py",
+                "previous_filename": "old.py",
+                "status": "renamed",
+                "patch": "@@ -1 +1 @@\n same",
+            }
+        ],
+        revision,
+    ]
+    snapshot = adaptor.fetch_review_snapshot(SimpleNamespace(full_name="org/repo"), "2")
+    assert snapshot["revision"] == {"head_sha": "head", "base_sha": "base"}
+    assert snapshot["changes"][0]["old_path"] == "old.py"
+    assert snapshot["changes"][0]["change_type"] == "renamed"
+
+
+@pytest.mark.parametrize("kind", [GitLabAdaptor, GitHubAdaptor])
+def test_no_position_never_calls_remote_creation(kind: type[GitLabAdaptor] | type[GitHubAdaptor]) -> None:
+    """Provider adaptors reject comments with no code-line position."""
+    from apps.sources.exceptions import AdaptorConfigurationError
+
+    adaptor = object.__new__(kind)
+    adaptor.client = Mock()
+    with pytest.raises(AdaptorConfigurationError, match="code line"):
+        adaptor.create_comment(SimpleNamespace(), "2", {}, {}, "finding")
+    adaptor.client.request_json.assert_not_called()
